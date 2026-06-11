@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo="agentos-core"
+# Updated by Grok Build 0.1 for GitHub issue #7
+repo="neuralforge-memory"
 command_name="${1:-manual}"
 latency_ms="${2:-0}"
 success="${3:-true}"
@@ -10,16 +11,18 @@ environment="${SENTRY_ENVIRONMENT:-local}"
 git_sha="${AGENTOS_GIT_SHA:-$(git rev-parse --short HEAD 2>/dev/null || printf 'unknown')}"
 run_id="${AGENTOS_RUN_ID:-${repo}-${git_sha}}"
 release="${repo}@${git_sha}"
-entity_search="${NEW_RELIC_ENTITY_SEARCH_AGENTOS_CORE:-}"
-actor="${NEW_RELIC_USER:-agentos}"
+entity_search="${NEW_RELIC_ENTITY_SEARCH_AGENTOS_CORE:-}"  # legacy var; update for NeuralForge-Memory
+actor="${NEW_RELIC_USER:-neuralforge}"  # was "agentos"
 
 if [[ -z "${NEW_RELIC_ACCOUNT_ID:-}" ]]; then
-  printf 'NEW_RELIC_ACCOUNT_ID is required\n' >&2
+  printf 'NEW_RELIC_ACCOUNT_ID is required
+' >&2
   exit 2
 fi
 
 if ! command -v jq >/dev/null 2>&1; then
-  printf 'jq is required to build the New Relic event payload safely\n' >&2
+  printf 'jq is required to build the New Relic event payload safely
+' >&2
   exit 2
 fi
 

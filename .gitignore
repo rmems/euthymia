@@ -16,6 +16,7 @@
 *.toml
 *.yaml
 *.yml
+!.github/workflows/*.yml
 /config/
 
 # API keys

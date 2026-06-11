@@ -10,21 +10,21 @@ mod server;
 mod session;
 mod tools;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow, bail};
 use clap::{Parser, Subcommand};
 use install::{ClientTarget, InstallContext};
 use rmcp::ServiceExt;
 use tracing_subscriber::FmtSubscriber;
 
 use crate::config::{discover_repo_home, load_server_config};
-use crate::router::{ModelRouter, ProviderRole};
+use crate::router::{ModelProvider, ModelRouter, ProviderRole};
 use crate::server::DiscoveryServer;
 
 #[derive(Debug, Parser)]
 #[command(
-    name = env!("CARGO_PKG_NAME"),
+    name = "neuralforge-memory",
     version,
-    about = "Local MCP server for Wilo Agent context and bounded repo analysis"
+    about = "Local MCP server for NeuralForge-Memory (RAG + vector DB for agent memory, e.g. Hermes AI Tutor/Hypeman). See GitHub #7. Renamed package/bin from agentos-core. Updated by Grok Build 0.1 for GitHub issue #7"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -43,8 +43,10 @@ enum Commands {
         client: ClientTarget,
     },
     Route {
-        #[arg(long, default_value_t = false, alias = "env")]
-        from_env: bool,
+        #[arg(long, default_value_t = false)]
+        env: bool,
+        #[arg(long)]
+        provider: Option<String>,
     },
     Install {
         #[arg(long, value_delimiter = ',')]
@@ -74,7 +76,7 @@ async fn main() -> Result<()> {
         Commands::ServeHttp { bind } => {
             http::serve(&bind).await?;
         }
-        Commands::Route { from_env } => {
+        Commands::Route { env, provider } => {
             let built_in = ModelRouter::built_in_defaults();
             let config_router = ModelRouter::load_system_config_if_present()?;
             let has_role_env = ProviderRole::all().iter().any(|role| {
@@ -83,10 +85,18 @@ async fn main() -> Result<()> {
                     .is_some_and(|value| !value.trim().is_empty())
             });
 
-            let overrides = if from_env || has_role_env {
+            let overrides = if env || has_role_env {
                 ModelRouter::from_env()?
             } else {
                 ModelRouter { roles: vec![] }
+            };
+
+            let provider_filter = match provider {
+                Some(provider_name) => Some(
+                    ModelProvider::from_str(&provider_name)
+                        .ok_or_else(|| anyhow!("unknown provider '{provider_name}'"))?,
+                ),
+                None => None,
             };
 
             let mut matched_any = false;
@@ -96,10 +106,15 @@ async fn main() -> Result<()> {
                 let override_p = overrides.get_provider(role);
                 let config_p = config_router.as_ref().and_then(|r| r.get_provider(role));
                 let built_in_p = built_in.get_provider(role);
-                let chosen = override_p.or(config_p).or(built_in_p);
                 let Some(chosen) = chosen else {
                     continue;
                 };
+
+                if let Some(provider_filter) = provider_filter {
+                    if chosen.provider != provider_filter {
+                        continue;
+                    }
+                }
 
                 matched_any = true;
 
@@ -117,10 +132,13 @@ async fn main() -> Result<()> {
             }
 
             if !matched_any {
-                println!("No roles are configured.");
+                match provider_filter {
+                    Some(filter) => bail!("no routes found for provider '{}'", filter.name()),
+                    None => println!("No roles are configured."),
+                }
             }
 
-            if !from_env {
+            if !env {
                 println!("\n# Environment variables:");
                 for role in ProviderRole::all() {
                     println!("- {} (provider name)", role.to_env_key());
@@ -155,7 +173,7 @@ async fn main() -> Result<()> {
                         .await?;
                 }
                 Commands::Doctor => {
-                    println!("{}", install::doctor(&install_ctx).await?);
+                    println!("{}", install::doctor(&install_ctx)?);
                 }
                 Commands::PrintConfig { client } => {
                     println!("{}", install::print_config(&install_ctx, client)?);

@@ -2,11 +2,11 @@
 
 ## Project identity
 
-This repository is `rmems/wilo-agent`.
+This repository is `rmems/NeuralForge-Memory`.
 
-Wilo Agent is a Rust-first local automation-agent runtime for Linux workstations and repo-aware AI workflows. It is not a generic chatbot.
+NeuralForge-Memory is the personal RAG + vector DB + MCP focused on memory. It powers the Hermes (Herems) tool used as an AI Tutor / Hypeman. The actual Hermes RAG execution lives in Oricale (running HCL infrastructure in the separate `Dioscuri-Cloud` repo and using the "ori cli" — consent given). This repo is the dedicated memory/RAG/MCP component supporting that vision.
 
-Wilo Agent is the runtime/control plane. Do not rename it to Metis. Metis is reserved for a future model architecture.
+(Do not rename it to Metis. Metis is reserved for a future model architecture.)
 
 ## Architecture boundaries
 
@@ -30,7 +30,7 @@ Do not add model backends unless the issue explicitly asks.
 
 Do not split the repo into workspace crates unless the issue explicitly asks.
 
-Do not perform broad AgentOS-to-Wilo renames unless the issue explicitly asks.
+Do not perform broad renames or cleanups without an authorizing issue (see #7 for the current NeuralForge-Memory identity alignment + legacy agentos cleanup).
 
 Do not add destructive shell execution.
 
@@ -45,3 +45,4 @@ Before opening a PR, run:
 ```bash
 cargo fmt --check
 cargo test
+```

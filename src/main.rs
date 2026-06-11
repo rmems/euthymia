@@ -106,7 +106,8 @@ async fn main() -> Result<()> {
                 let override_p = overrides.get_provider(role);
                 let config_p = config_router.as_ref().and_then(|r| r.get_provider(role));
                 let built_in_p = built_in.get_provider(role);
-                let Some(chosen) = chosen else {
+                let chosen_opt = override_p.or(config_p).or(built_in_p);
+                let Some(chosen) = chosen_opt else {
                     continue;
                 };
 
@@ -173,7 +174,7 @@ async fn main() -> Result<()> {
                         .await?;
                 }
                 Commands::Doctor => {
-                    println!("{}", install::doctor(&install_ctx)?);
+                    println!("{}", install::doctor(&install_ctx).await?);
                 }
                 Commands::PrintConfig { client } => {
                     println!("{}", install::print_config(&install_ctx, client)?);

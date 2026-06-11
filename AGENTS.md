@@ -4,6 +4,8 @@
 
 This repository is `rmems/NeuralForge-Memory`.
 
+<!-- Updated by Grok Build 0.1 for GitHub issue #7: repo name change cleanup -->
+
 NeuralForge-Memory is the personal RAG + vector DB + MCP focused on memory. It powers the Hermes (Herems) tool used as an AI Tutor / Hypeman. The actual Hermes RAG execution lives in Oricale (running HCL infrastructure in the separate `Dioscuri-Cloud` repo and using the "ori cli" — consent given). This repo is the dedicated memory/RAG/MCP component supporting that vision.
 
 (Do not rename it to Metis. Metis is reserved for a future model architecture.)

@@ -667,14 +667,16 @@ impl Orchestrator {
                 self.manifest_path.display()
             );
         }
-        if let Some(parent) = self.manifest_path.parent()
-            && parent.is_dir()
-            && !is_writable_dir(parent)
-        {
-            bail!(
-                "manifest directory {} is not writable; move it to a writable NeuralForge-Memory config location before indexing",
-                parent.display()
-            );
+        if let Some(parent) = self.manifest_path.parent() {
+            std::fs::create_dir_all(parent).with_context(|| {
+                format!("failed to create manifest directory {}", parent.display())
+            })?;
+            if !is_writable_dir(parent) {
+                bail!(
+                    "manifest directory {} is not writable; move it to a writable NeuralForge-Memory config location before indexing",
+                    parent.display()
+                );
+            }
         }
         Ok(())
     }
@@ -1212,11 +1214,13 @@ fn migrate_manifest(source: &Path) -> Option<PathBuf> {
     );
 
     candidates.into_iter().find(|destination| {
-        // Never overwrite an existing destination: it may already hold valid tracking
-        // data (e.g. from a prior partial migration), and clobbering it non-atomically
-        // could destroy usable state. Move on to the next candidate instead.
         if destination.exists() {
-            return false;
+            // A prior run may have already migrated into this destination - reuse it
+            // rather than re-running the migration every startup. Only treat it as
+            // usable if it's actually a valid manifest; a corrupt or foreign file at
+            // this path is skipped (not overwritten) rather than risking data loss by
+            // clobbering unknown state.
+            return is_valid_manifest_file(destination);
         }
         if let Some(parent) = destination.parent()
             && std::fs::create_dir_all(parent).is_err()
@@ -1225,6 +1229,12 @@ fn migrate_manifest(source: &Path) -> Option<PathBuf> {
         }
         std::fs::write(destination, &raw).is_ok()
     })
+}
+
+fn is_valid_manifest_file(path: &Path) -> bool {
+    std::fs::read_to_string(path)
+        .ok()
+        .is_some_and(|raw| serde_json::from_str::<IndexManifest>(&raw).is_ok())
 }
 
 fn is_writable_file(path: &Path) -> bool {

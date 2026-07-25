@@ -28,7 +28,7 @@ Built for the **NVIDIA RTX 5080** and open-weight models, it keeps your code, em
 
 ## Development Workflow
 
-Wilo is developed with an AI-assisted, multi-agent workflow:
+NeuralForge-Memory is developed with an AI-assisted, multi-agent workflow:
 
 - **GitHub** — serves as the primary build log and progress tracker; issues, PRs, and commits document every design decision in the open
 - **[Codex](https://openai.com/index/openai-codex/)** — cloud agent handling heavy repo work: large refactors, cross-file changes, and deep code generation
@@ -55,7 +55,7 @@ Wilo is developed with an AI-assisted, multi-agent workflow:
 └────────────────────────┬────────────────────────────┘
                          │ stdio / MCP
 ┌────────────────────────▼────────────────────────────┐
-│               agentos-core  (Rust)                  │
+│            neuralforge-memory  (Rust)               │
 │                                                     │
 │  ┌──────────┐  ┌──────────┐  ┌───────────────────┐ │
 │  │ Sessions │  │ Repo     │  │ Model Router      │ │
@@ -76,7 +76,7 @@ Wilo is developed with an AI-assisted, multi-agent workflow:
 
 ## Model Backends
 
-Wilo Agent separates the **control plane** (agent runtime, MCP, orchestration) from the **model plane** (pluggable inference backends). Current evaluation targets:
+NeuralForge-Memory separates the **control plane** (agent runtime, MCP, orchestration) from the **model plane** (pluggable inference backends). Current evaluation targets:
 
 | Model | Params | Architecture | Format | Runtime | Est. VRAM |
 |-------|--------|-------------|--------|---------|-----------|
@@ -94,7 +94,7 @@ Three of the five evaluation targets — Mamba-Codestral, Jamba, and Falcon-H1R 
 - **Constant memory per token** — SSM state is fixed-size regardless of sequence length, reducing VRAM pressure during long agent workflows with tool calls
 - **Better long-context scaling** — hybrid models keep Transformer attention for tasks that benefit from global reasoning while offloading sequential processing to SSM layers
 
-This makes hybrid models a natural fit for Wilo's core workloads: repo audit (large file scans), RAG-assisted research (high chunk counts), and multi-step agent loops where context accumulates over many tool calls. The Jamba 3B in particular can serve as a fast triage model that pre-filters before routing heavier tasks to the 9B Nemotron.
+This makes hybrid models a natural fit for NeuralForge-Memory's core workloads: repo audit (large file scans), RAG-assisted research (high chunk counts), and multi-step agent loops where context accumulates over many tool calls. The Jamba 3B in particular can serve as a fast triage model that pre-filters before routing heavier tasks to the 9B Nemotron.
 
 Role-based routing dispatches requests across providers:
 

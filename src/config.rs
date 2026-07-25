@@ -70,8 +70,17 @@ pub fn discover_repo_home() -> Result<PathBuf> {
     // Walk up ancestors (starting at current dir)
     let mut current = env::current_dir().context("failed to resolve current directory")?;
     loop {
-        if current.join("config/server.toml").exists() {
-            return Ok(current);
+        let marker = current.join("config/server.toml");
+        // symlink_metadata(), not exists(): exists() follows symlinks, so a dangling
+        // symlink at the nearest checkout's marker would report "nothing here" and
+        // keep walking up to an outer ancestor, silently running against the wrong
+        // repository instead of surfacing the broken marker in the intended checkout.
+        match marker.symlink_metadata() {
+            Ok(_) => return Ok(current),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => {
+                return Err(err).with_context(|| format!("failed to check {}", marker.display()));
+            }
         }
         if !current.pop() {
             break;

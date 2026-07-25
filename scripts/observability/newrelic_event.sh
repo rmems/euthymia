@@ -37,7 +37,7 @@ fi
 
 event="$(
   jq -n \
-    --arg eventType "AgentOsMcpRun" \
+    --arg eventType "NeuralForgeMemoryMcpRun" \
     --arg repo "${repo}" \
     --arg run_id "${run_id}" \
     --arg git_sha "${git_sha}" \

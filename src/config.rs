@@ -14,33 +14,35 @@ pub struct ServerConfig {
 }
 
 impl ServerConfig {
-    pub fn resolved_default_repo_root(&self) -> PathBuf {
+    pub fn resolved_default_repo_root(&self) -> Result<PathBuf> {
         // Updated by Grok Build 0.1 for GitHub issue #7: prefer NEURALFORGE_MEMORY_CANON_ROOT, fallback to legacy AGENTOS_CORE_CANON_ROOT for compat
-        // An explicitly-set-but-empty override is treated as unset, not as the current directory.
-        env::var("NEURALFORGE_MEMORY_CANON_ROOT")
-            .ok()
-            .filter(|v| !v.is_empty())
-            .or_else(|| {
-                env::var("AGENTOS_CORE_CANON_ROOT")
-                    .ok()
-                    .filter(|v| !v.is_empty())
-            })
-            .map(PathBuf::from)
-            .unwrap_or_else(|| self.default_repo_root.clone())
+        // An explicitly-set-but-empty override is treated as unset, not as the current directory,
+        // and a non-Unicode override is rejected rather than silently ignored.
+        for var in ["NEURALFORGE_MEMORY_CANON_ROOT", "AGENTOS_CORE_CANON_ROOT"] {
+            match env::var(var) {
+                Ok(value) if value.is_empty() => continue,
+                Ok(value) => return Ok(PathBuf::from(value)),
+                Err(env::VarError::NotPresent) => continue,
+                Err(env::VarError::NotUnicode(_)) => {
+                    bail!("{var} is set but is not valid unicode");
+                }
+            }
+        }
+        Ok(self.default_repo_root.clone())
     }
 
-    pub fn policy_markdown(&self) -> String {
+    pub fn policy_markdown(&self) -> Result<String> {
         let bullets = self
             .default_invariants
             .iter()
             .map(|line| format!("- {line}"))
             .collect::<Vec<_>>()
             .join("\n");
-        format!(
+        Ok(format!(
             "# Canon Policy\n\nDefault canon root: `{}`\n\n{}\n",
-            self.resolved_default_repo_root().display(),
+            self.resolved_default_repo_root()?.display(),
             bullets
-        )
+        ))
     }
 }
 
@@ -83,12 +85,16 @@ pub fn discover_repo_home() -> Result<PathBuf> {
 
 /// Resolve a system config file path: prefer the NeuralForge-Memory location if it
 /// exists, falling back to the legacy AgentOS location for the #7 transition.
-pub fn resolve_system_config_path(neuralforge_path: &str, legacy_path: &str) -> PathBuf {
+///
+/// Uses `try_exists()` rather than `exists()` so a metadata error other than "not
+/// found" (e.g. permission denied on the parent directory, a dangling symlink) is
+/// reported instead of being silently treated as "use the legacy path".
+pub fn resolve_system_config_path(neuralforge_path: &str, legacy_path: &str) -> Result<PathBuf> {
     let neuralforge = Path::new(neuralforge_path);
-    if neuralforge.exists() {
-        neuralforge.to_path_buf()
-    } else {
-        PathBuf::from(legacy_path)
+    match neuralforge.try_exists() {
+        Ok(true) => Ok(neuralforge.to_path_buf()),
+        Ok(false) => Ok(PathBuf::from(legacy_path)),
+        Err(err) => Err(err).with_context(|| format!("failed to check {}", neuralforge.display())),
     }
 }
 

@@ -61,7 +61,7 @@ pub struct IndexReposReport {
 }
 
 pub fn load_rag_config() -> Result<RagConfig> {
-    let path = crate::config::resolve_system_config_path(RAG_CONFIG_PATH, RAG_CONFIG_PATH_LEGACY);
+    let path = crate::config::resolve_system_config_path(RAG_CONFIG_PATH, RAG_CONFIG_PATH_LEGACY)?;
     let raw = std::fs::read_to_string(&path)
         .with_context(|| format!("failed to read {}", path.display()))?;
     serde_json::from_str(&raw).with_context(|| format!("failed to parse {}", path.display()))
@@ -71,7 +71,7 @@ pub fn load_vector_db_config() -> Result<VectorDbConfig> {
     let path = crate::config::resolve_system_config_path(
         VECTOR_DB_CONFIG_PATH,
         VECTOR_DB_CONFIG_PATH_LEGACY,
-    );
+    )?;
     let raw = std::fs::read_to_string(&path)
         .with_context(|| format!("failed to read {}", path.display()))?;
     serde_json::from_str(&raw).with_context(|| format!("failed to parse {}", path.display()))
@@ -81,7 +81,7 @@ pub fn load_repo_index_config() -> Result<RepoIndexConfig> {
     let path = crate::config::resolve_system_config_path(
         REPO_INDEX_CONFIG_PATH,
         REPO_INDEX_CONFIG_PATH_LEGACY,
-    );
+    )?;
     let raw = std::fs::read_to_string(&path)
         .with_context(|| format!("failed to read {}", path.display()))?;
     serde_json::from_str(&raw).with_context(|| format!("failed to parse {}", path.display()))

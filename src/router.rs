@@ -183,7 +183,7 @@ impl ModelRouter {
             let path = crate::config::resolve_system_config_path(
                 SYSTEM_ROUTER_CONFIG_PATH,
                 SYSTEM_ROUTER_CONFIG_PATH_LEGACY,
-            );
+            )?;
             if !path.exists() {
                 return Ok(None);
             }

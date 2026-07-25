@@ -8,7 +8,8 @@ use clap::ValueEnum;
 use dirs::home_dir;
 use serde_json::{Map, Value, json};
 
-const SERVER_KEY: &str = "agentos-core";
+const SERVER_KEY: &str = "neuralforge-memory";
+const SERVER_KEY_LEGACY: &str = "agentos-core";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 pub enum ClientTarget {
@@ -66,6 +67,9 @@ pub fn install(
                 let args = ctx.codex_add_args();
                 if dry_run {
                     changes.push(format!("codex {}", args.join(" ")));
+                    changes.push(format!(
+                        "codex mcp remove {SERVER_KEY_LEGACY} (migrate, if present)"
+                    ));
                 } else {
                     let status = Command::new("codex")
                         .args(&args)
@@ -75,46 +79,89 @@ pub fn install(
                         bail!("codex mcp add failed with status {status}");
                     }
                     changes.push("updated Codex via codex mcp add".to_string());
+                    // Best-effort: drop the pre-rename entry so `codex mcp list` doesn't
+                    // carry both identities. A non-zero exit just means it wasn't there.
+                    let _ = Command::new("codex")
+                        .args(["mcp", "remove", SERVER_KEY_LEGACY])
+                        .status();
                 }
             }
             ClientTarget::Cursor => {
                 let path = home_path(".cursor/mcp.json")?;
                 let entry = stdio_entry_json(&ctx.launcher_path());
-                upsert_json_server(&path, "mcpServers", SERVER_KEY, entry, dry_run)?;
+                upsert_json_server_migrating(
+                    &path,
+                    "mcpServers",
+                    SERVER_KEY,
+                    SERVER_KEY_LEGACY,
+                    entry,
+                    dry_run,
+                )?;
                 changes.push(path.display().to_string());
             }
             ClientTarget::Vscode => {
                 let path = home_path(".config/Code/User/mcp.json")?;
                 let entry = vscode_stdio_entry_json(&ctx.launcher_path());
-                upsert_json_server(&path, "servers", SERVER_KEY, entry, dry_run)?;
+                upsert_json_server_migrating(
+                    &path,
+                    "servers",
+                    SERVER_KEY,
+                    SERVER_KEY_LEGACY,
+                    entry,
+                    dry_run,
+                )?;
                 changes.push(path.display().to_string());
             }
             ClientTarget::Windsurf => {
                 let path = home_path(".codeium/windsurf/mcp_config.json")?;
                 let entry = stdio_entry_json(&ctx.launcher_path());
-                upsert_json_server(&path, "mcpServers", SERVER_KEY, entry, dry_run)?;
+                upsert_json_server_migrating(
+                    &path,
+                    "mcpServers",
+                    SERVER_KEY,
+                    SERVER_KEY_LEGACY,
+                    entry,
+                    dry_run,
+                )?;
                 changes.push(path.display().to_string());
             }
             ClientTarget::Trae => {
                 let path = home_path(".config/Trae/User/mcp.json")?;
                 let entry = stdio_entry_json(&ctx.launcher_path());
-                upsert_json_server(&path, "mcpServers", SERVER_KEY, entry, dry_run)?;
+                upsert_json_server_migrating(
+                    &path,
+                    "mcpServers",
+                    SERVER_KEY,
+                    SERVER_KEY_LEGACY,
+                    entry,
+                    dry_run,
+                )?;
                 changes.push(path.display().to_string());
             }
             ClientTarget::Antigravity => {
                 let path = home_path(".antigravity/settings.json")?;
                 let entry = stdio_entry_json(&ctx.launcher_path());
-                upsert_json_server(&path, "mcpServers", SERVER_KEY, entry, dry_run)?;
+                upsert_json_server_migrating(
+                    &path,
+                    "mcpServers",
+                    SERVER_KEY,
+                    SERVER_KEY_LEGACY,
+                    entry,
+                    dry_run,
+                )?;
                 changes.push(path.display().to_string());
             }
             ClientTarget::Jetbrains => {
                 let junie_path = home_path(".junie/mcp/mcp.json")?;
-                let snippet_path = home_path(".jetbrains/agentos-core.mcp.json")?;
+                let snippet_path = home_path(&format!(".jetbrains/{SERVER_KEY}.mcp.json"))?;
+                let legacy_snippet_path =
+                    home_path(&format!(".jetbrains/{SERVER_KEY_LEGACY}.mcp.json"))?;
                 let entry = stdio_entry_json(&ctx.launcher_path());
-                upsert_json_server(
+                upsert_json_server_migrating(
                     &junie_path,
                     "mcpServers",
                     SERVER_KEY,
+                    SERVER_KEY_LEGACY,
                     entry.clone(),
                     dry_run,
                 )?;
@@ -123,6 +170,11 @@ pub fn install(
                     json!({ "mcpServers": { SERVER_KEY: entry } }),
                     dry_run,
                 )?;
+                if !dry_run && legacy_snippet_path.exists() {
+                    std::fs::remove_file(&legacy_snippet_path).with_context(|| {
+                        format!("failed to remove {}", legacy_snippet_path.display())
+                    })?;
+                }
                 changes.push(junie_path.display().to_string());
                 changes.push(snippet_path.display().to_string());
             }
@@ -141,52 +193,66 @@ pub fn uninstall(
     for target in selected {
         match target {
             ClientTarget::Codex => {
-                let args = ["mcp", "remove", SERVER_KEY];
                 if dry_run {
-                    changes.push(format!("codex {}", args.join(" ")));
+                    changes.push(format!("codex mcp remove {SERVER_KEY}"));
+                    changes.push(format!("codex mcp remove {SERVER_KEY_LEGACY} (if present)"));
                 } else {
-                    let status = Command::new("codex")
-                        .args(args)
-                        .status()
-                        .context("failed to run codex mcp remove")?;
-                    if !status.success() {
-                        bail!("codex mcp remove failed with status {status}");
+                    for key in [SERVER_KEY, SERVER_KEY_LEGACY] {
+                        let status = Command::new("codex")
+                            .args(["mcp", "remove", key])
+                            .status()
+                            .context("failed to run codex mcp remove")?;
+                        if status.success() {
+                            changes.push(format!("removed Codex config for {key}"));
+                        }
                     }
-                    changes.push("removed Codex config".to_string());
                 }
             }
             ClientTarget::Cursor => {
                 let path = home_path(".cursor/mcp.json")?;
                 remove_json_server(&path, "mcpServers", SERVER_KEY, dry_run)?;
+                remove_json_server(&path, "mcpServers", SERVER_KEY_LEGACY, dry_run)?;
                 changes.push(path.display().to_string());
             }
             ClientTarget::Vscode => {
                 let path = home_path(".config/Code/User/mcp.json")?;
                 remove_json_server(&path, "servers", SERVER_KEY, dry_run)?;
+                remove_json_server(&path, "servers", SERVER_KEY_LEGACY, dry_run)?;
                 changes.push(path.display().to_string());
             }
             ClientTarget::Windsurf => {
                 let path = home_path(".codeium/windsurf/mcp_config.json")?;
                 remove_json_server(&path, "mcpServers", SERVER_KEY, dry_run)?;
+                remove_json_server(&path, "mcpServers", SERVER_KEY_LEGACY, dry_run)?;
                 changes.push(path.display().to_string());
             }
             ClientTarget::Trae => {
                 let path = home_path(".config/Trae/User/mcp.json")?;
                 remove_json_server(&path, "mcpServers", SERVER_KEY, dry_run)?;
+                remove_json_server(&path, "mcpServers", SERVER_KEY_LEGACY, dry_run)?;
                 changes.push(path.display().to_string());
             }
             ClientTarget::Antigravity => {
                 let path = home_path(".antigravity/settings.json")?;
                 remove_json_server(&path, "mcpServers", SERVER_KEY, dry_run)?;
+                remove_json_server(&path, "mcpServers", SERVER_KEY_LEGACY, dry_run)?;
                 changes.push(path.display().to_string());
             }
             ClientTarget::Jetbrains => {
                 let junie_path = home_path(".junie/mcp/mcp.json")?;
-                let snippet_path = home_path(".jetbrains/agentos-core.mcp.json")?;
+                let snippet_path = home_path(&format!(".jetbrains/{SERVER_KEY}.mcp.json"))?;
+                let legacy_snippet_path =
+                    home_path(&format!(".jetbrains/{SERVER_KEY_LEGACY}.mcp.json"))?;
                 remove_json_server(&junie_path, "mcpServers", SERVER_KEY, dry_run)?;
+                remove_json_server(&junie_path, "mcpServers", SERVER_KEY_LEGACY, dry_run)?;
                 if !dry_run && snippet_path.exists() {
                     std::fs::remove_file(&snippet_path)
                         .with_context(|| format!("failed to remove {}", snippet_path.display()))?;
+                }
+                if !dry_run && legacy_snippet_path.exists() {
+                    std::fs::remove_file(&legacy_snippet_path).with_context(|| {
+                        format!("failed to remove {}", legacy_snippet_path.display())
+                    })?;
                 }
                 changes.push(junie_path.display().to_string());
                 changes.push(snippet_path.display().to_string());
@@ -241,7 +307,7 @@ pub async fn doctor(ctx: &InstallContext) -> Result<String> {
         ("jetbrains-junie", home_path(".junie/mcp/mcp.json")?),
         (
             "jetbrains-snippet",
-            home_path(".jetbrains/agentos-core.mcp.json")?,
+            home_path(&format!(".jetbrains/{SERVER_KEY}.mcp.json"))?,
         ),
     ];
 
@@ -290,10 +356,13 @@ fn vscode_stdio_entry_json(launcher: &Path) -> Value {
     })
 }
 
-fn upsert_json_server(
+/// Insert `server_name` under `root_key`, dropping any `legacy_name` entry from the
+/// same object in the same pass (migrates a pre-rename install in place).
+fn upsert_json_server_migrating(
     path: &Path,
     root_key: &str,
     server_name: &str,
+    legacy_name: &str,
     server_value: Value,
     dry_run: bool,
 ) -> Result<()> {
@@ -302,6 +371,7 @@ fn upsert_json_server(
         .remove(root_key)
         .and_then(|value| value.as_object().cloned())
         .unwrap_or_default();
+    servers.remove(legacy_name);
     servers.insert(server_name.to_string(), server_value);
     root.insert(root_key.to_string(), Value::Object(servers));
     write_json_value(path, Value::Object(root), dry_run)

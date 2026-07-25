@@ -1083,6 +1083,15 @@ pub(crate) fn rag_index_manifest_path() -> PathBuf {
 fn default_manifest_path() -> PathBuf {
     #[cfg(unix)]
     {
+        // Prefer wherever a manifest already exists so a partial migration (new config
+        // dir created, but the manifest hasn't moved yet) doesn't start indexing from an
+        // empty map and orphan vectors tracked only in the legacy manifest.
+        for candidate in [SYSTEM_MANIFEST_PATH, SYSTEM_MANIFEST_PATH_LEGACY] {
+            let system_path = PathBuf::from(candidate);
+            if system_path.exists() {
+                return system_path;
+            }
+        }
         for candidate in [SYSTEM_MANIFEST_PATH, SYSTEM_MANIFEST_PATH_LEGACY] {
             let system_path = PathBuf::from(candidate);
             if system_path

@@ -1,4 +1,5 @@
 use std::env;
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -41,9 +42,19 @@ pub fn discover_repo_home() -> Result<PathBuf> {
     if let Ok(home) = env::var("NEURALFORGE_MEMORY_HOME").or_else(|_| env::var("AGENTOS_CORE_HOME"))
     {
         let path = PathBuf::from(home);
-        if path.exists() {
-            return Ok(path);
+        if !path.exists() {
+            bail!(
+                "NEURALFORGE_MEMORY_HOME is set but does not exist: {}",
+                path.display()
+            );
         }
+        if !path.is_dir() {
+            bail!(
+                "NEURALFORGE_MEMORY_HOME is set but is not a directory: {}",
+                path.display()
+            );
+        }
+        return Ok(path);
     }
 
     // Walk up ancestors (starting at current dir)
@@ -62,9 +73,40 @@ pub fn discover_repo_home() -> Result<PathBuf> {
     )
 }
 
+/// Split `RAG_REPO_ROOTS` using the platform path separator rules (`:` vs `;`).
+pub fn parse_rag_repo_roots(value: &OsStr) -> Vec<PathBuf> {
+    env::split_paths(value)
+        .filter(|p| !p.as_os_str().is_empty())
+        .collect()
+}
+
 pub fn load_server_config(repo_home: &Path) -> Result<ServerConfig> {
     let path = repo_home.join("config/server.toml");
+    if !path.exists() {
+        bail!(
+            "missing {}: run from the repository root, or set NEURALFORGE_MEMORY_HOME to a checkout that contains config/server.toml (current repo_home: {})",
+            path.display(),
+            repo_home.display()
+        );
+    }
     let raw = std::fs::read_to_string(&path)
         .with_context(|| format!("failed to read {}", path.display()))?;
     toml::from_str(&raw).with_context(|| format!("failed to parse {}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_rag_repo_roots_uses_split_paths() {
+        let dir1 = tempfile::tempdir().expect("tempdir 1");
+        let dir2 = tempfile::tempdir().expect("tempdir 2");
+        let joined = std::env::join_paths([dir1.path(), dir2.path()]).expect("join_paths");
+        let parsed = parse_rag_repo_roots(&joined);
+        assert_eq!(
+            parsed,
+            vec![dir1.path().to_path_buf(), dir2.path().to_path_buf()]
+        );
+    }
 }

@@ -2,9 +2,8 @@
 ///
 /// These tests assert that AGENTS.md and README.md reflect the project identity
 /// update from "Wilo Agent / rmems/wilo-agent" to "NeuralForge-Memory / rmems/NeuralForge-Memory",
-/// and that the new Hermes/Oricale context, architecture boundary rules, and CLI
+/// and that the new Hermes/Oracle context, architecture boundary rules, and CLI
 /// examples are present (or absent) as expected by the diff.
-
 use std::path::PathBuf;
 
 fn repo_root() -> PathBuf {
@@ -55,11 +54,11 @@ fn agents_project_description_mentions_hermes() {
 }
 
 #[test]
-fn agents_project_description_mentions_oricale() {
+fn agents_project_description_mentions_oracle() {
     let content = read_file("AGENTS.md");
     assert!(
-        content.contains("Oricale"),
-        "AGENTS.md must mention Oricale as the location of the actual Hermes RAG execution"
+        content.contains("Oracle"),
+        "AGENTS.md must mention Oracle as the location of the actual Hermes RAG execution"
     );
 }
 
@@ -202,11 +201,11 @@ fn readme_project_description_block_mentions_hermes() {
 }
 
 #[test]
-fn readme_project_description_mentions_oricale() {
+fn readme_project_description_mentions_oracle() {
     let content = read_file("README.md");
     assert!(
-        content.contains("Oricale"),
-        "README.md must mention Oricale as the home of the actual Hermes RAG execution"
+        content.contains("Oracle"),
+        "README.md must mention Oracle as the home of the actual Hermes RAG execution"
     );
 }
 
@@ -277,11 +276,11 @@ fn both_docs_mention_hermes() {
 }
 
 #[test]
-fn both_docs_mention_oricale() {
+fn both_docs_mention_oracle() {
     let agents = read_file("AGENTS.md");
     let readme = read_file("README.md");
-    assert!(agents.contains("Oricale"), "AGENTS.md must mention Oricale");
-    assert!(readme.contains("Oricale"), "README.md must mention Oricale");
+    assert!(agents.contains("Oracle"), "AGENTS.md must mention Oracle");
+    assert!(readme.contains("Oracle"), "README.md must mention Oracle");
 }
 
 /// Regression: ensure neither document reverts to the old repository URL.

@@ -7,7 +7,7 @@ This repository is `rmems/NeuralForge-Memory`.
 
 <!-- Updated by Grok Build 0.1 for GitHub issue #7: repo name change cleanup (Wilo/agentos -> NeuralForge-Memory) -->
 
-NeuralForge-Memory is the personal RAG + vector DB + MCP focused on memory. It powers the Hermes (Herems) tool used as an AI Tutor / Hypeman. The actual Hermes RAG execution lives in Oracle (running HCL infrastructure in the separate `Dioscuri-Cloud` repo and using the "ori cli" — consent given). This repo is the dedicated memory/RAG/MCP component supporting that vision.
+NeuralForge-Memory is the personal RAG + vector DB + MCP focused on memory. It powers the Hermes tool used as an AI Tutor / Hypeman. The actual Hermes RAG execution lives in Oracle (running HCL infrastructure in the separate `Dioscuri-Cloud` repo and using the "ori cli" — consent given). This repo is the dedicated memory/RAG/MCP component supporting that vision.
 
 <!-- Updated by Grok Build 0.1 for GitHub issue #7 -->
 

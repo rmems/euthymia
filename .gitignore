@@ -9,7 +9,8 @@
 /etc/neuralforge-memory/configs/
 /etc/neuralforge-memory/tools/
 /etc/neuralforge-memory/schemas/
-/etc/agentos/  # legacy paths kept in ignore during transition (see #7)
+# legacy AgentOS paths kept in ignore during transition (see #7)
+/etc/agentos/
 
 # Local configs (never commit)
 *.jsonc

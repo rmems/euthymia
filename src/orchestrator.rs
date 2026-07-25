@@ -1192,10 +1192,24 @@ fn default_manifest_path() -> PathBuf {
 }
 
 fn default_local_manifest_path() -> PathBuf {
-    dirs::data_local_dir()
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+    let base = dirs::data_local_dir()
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let current = base
         .join("neuralforge-memory")
-        .join("rag_index_manifest.json")
+        .join("rag_index_manifest.json");
+    if current.exists() {
+        return current;
+    }
+    // An install predating the neuralforge-memory rename tracked chunks under the
+    // legacy `agentos` user-local dir. Keep using that file in place rather than
+    // starting fresh at the renamed path: this dir is always writable (unlike the
+    // /etc system locations), so there's no need to migrate it, and starting fresh
+    // would orphan vectors this manifest is the only record of.
+    let legacy = base.join("agentos").join("rag_index_manifest.json");
+    if legacy.exists() {
+        return legacy;
+    }
+    current
 }
 
 /// The manifest path actually in effect for `logical_path` right now: the recorded

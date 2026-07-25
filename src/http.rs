@@ -25,15 +25,21 @@ pub async fn serve(bind: &str) -> Result<()> {
     let state = Arc::new(HttpState {
         orchestrator: Arc::new(Orchestrator::from_env()?),
         // Prefer NeuralForge env names; AGENTOS_RAG_JWT kept as transition fallback (#7 / PR#8).
+        // Each candidate is trimmed/emptiness-checked before find_map moves on, so an
+        // empty deployment-template override (e.g. NEURALFORGE_RAG_JWT="") doesn't win
+        // over a real token in a lower-priority variable and silently disable auth.
         auth_token: [
             "NEURALFORGE_RAG_JWT",
             "NEURALFORGE_MEMORY_RAG_JWT",
             "AGENTOS_RAG_JWT",
         ]
         .into_iter()
-        .find_map(|name| std::env::var(name).ok())
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
+        .find_map(|name| {
+            std::env::var(name)
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+        })
         .map(Arc::<str>::from),
     });
     let app = Router::new()

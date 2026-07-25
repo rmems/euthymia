@@ -24,11 +24,17 @@ struct HttpState {
 pub async fn serve(bind: &str) -> Result<()> {
     let state = Arc::new(HttpState {
         orchestrator: Arc::new(Orchestrator::from_env()?),
-        auth_token: std::env::var("AGENTOS_RAG_JWT")
-            .ok()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-            .map(Arc::<str>::from),
+        // Prefer NeuralForge env names; AGENTOS_RAG_JWT kept as transition fallback (#7 / PR#8).
+        auth_token: [
+            "NEURALFORGE_RAG_JWT",
+            "NEURALFORGE_MEMORY_RAG_JWT",
+            "AGENTOS_RAG_JWT",
+        ]
+        .into_iter()
+        .find_map(|name| std::env::var(name).ok())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(Arc::<str>::from),
     });
     let app = Router::new()
         .route("/ingest/file", post(ingest_file))

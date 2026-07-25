@@ -1142,7 +1142,10 @@ fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 pub(crate) fn rag_index_manifest_path() -> PathBuf {
-    env_string("AGENTOS_RAG_INDEX_MANIFEST")
+    // Prefer NeuralForge env names; AGENTOS_*/RAG_* kept as transition fallbacks (#7 / PR#8).
+    env_string("NEURALFORGE_RAG_INDEX_MANIFEST")
+        .or_else(|| env_string("NEURALFORGE_MEMORY_RAG_INDEX_MANIFEST"))
+        .or_else(|| env_string("AGENTOS_RAG_INDEX_MANIFEST"))
         .or_else(|| env_string("RAG_INDEX_MANIFEST"))
         .map(PathBuf::from)
         .unwrap_or_else(default_manifest_path)
@@ -1310,7 +1313,7 @@ fn is_writable_file(path: &Path) -> bool {
 }
 
 fn is_writable_dir(path: &Path) -> bool {
-    let test_path = path.join(format!(".agentos-write-test-{}", std::process::id()));
+    let test_path = path.join(format!(".neuralforge-write-test-{}", std::process::id()));
     match std::fs::OpenOptions::new()
         .create_new(true)
         .write(true)

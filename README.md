@@ -208,8 +208,10 @@ export BATCH_SIZE=128
 export CHUNK_TOKENS=800
 export CHUNK_OVERLAP=0.25
 export RAG_REPO_ROOTS=/path/to/repo1:/path/to/repo2
-export AGENTOS_RAG_INDEX_MANIFEST=/etc/agentos/configs/rag_index_manifest.json
-export AGENTOS_RAG_JWT=<optional-bearer-token>
+export NEURALFORGE_RAG_INDEX_MANIFEST=/etc/neuralforge-memory/configs/rag_index_manifest.json
+# legacy: AGENTOS_RAG_INDEX_MANIFEST or RAG_INDEX_MANIFEST
+export NEURALFORGE_RAG_JWT=<optional-bearer-token>
+# legacy: AGENTOS_RAG_JWT (also accepts NEURALFORGE_MEMORY_RAG_JWT)
 
 # Observability (CLI-only, no embedded SDKs)
 export SENTRY_ORG="<sentry-org>"
@@ -226,7 +228,7 @@ The server enforces a strict repo-centric canon:
 - Do not import assumptions from sibling repos unless context explicitly names them
 - Surface ambiguity instead of normalizing it across repos
 
-The default canon root is set by the deployment environment via `AGENTOS_CORE_CANON_ROOT` or `config/server.toml`.
+The default canon root is set by the deployment environment via `NEURALFORGE_MEMORY_CANON_ROOT` (legacy: `AGENTOS_CORE_CANON_ROOT`) or `config/server.toml`.
 
 ## Supported Clients
 

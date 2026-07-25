@@ -653,20 +653,8 @@ impl Orchestrator {
         })
     }
 
-    /// The manifest path actually in effect right now: the recorded migration
-    /// destination if one was already established for `self.manifest_path`,
-    /// otherwise `self.manifest_path` itself. Pure read - performs no migration, so
-    /// it's safe to call from read-only contexts (health checks, doctor) without
-    /// side effects.
     fn effective_manifest_path(&self) -> PathBuf {
-        let marker = migration_marker_path(&self.manifest_path);
-        if let Ok(recorded) = std::fs::read_to_string(&marker) {
-            let recorded = PathBuf::from(recorded.trim());
-            if !recorded.as_os_str().is_empty() && recorded.exists() {
-                return recorded;
-            }
-        }
-        self.manifest_path.clone()
+        effective_manifest_path_for(&self.manifest_path)
     }
 
     /// Resolve a writable manifest path, migrating a read-only one if needed, and
@@ -1207,17 +1195,44 @@ fn default_local_manifest_path() -> PathBuf {
         .join("rag_index_manifest.json")
 }
 
+/// The manifest path actually in effect for `logical_path` right now: the recorded
+/// migration destination if one was already established, otherwise `logical_path`
+/// itself. Pure read - performs no migration, so it's safe to call from read-only
+/// contexts (health checks, doctor) without side effects.
+pub(crate) fn effective_manifest_path_for(logical_path: &Path) -> PathBuf {
+    let marker = migration_marker_path(logical_path);
+    if let Ok(recorded) = std::fs::read_to_string(&marker) {
+        let recorded = PathBuf::from(recorded.trim());
+        if !recorded.as_os_str().is_empty() && recorded.exists() {
+            return recorded;
+        }
+    }
+    logical_path.to_path_buf()
+}
+
 /// Path of the marker file recording where `logical_path` was migrated to, so the
 /// migration destination survives even after its content diverges from the
-/// (frozen, read-only) source through normal saves.
+/// (frozen, read-only) source through normal saves. Lives under the same writable
+/// user-local data dir used as the last-resort manifest destination - never beside
+/// `logical_path` itself, since that location is exactly what's unwritable when a
+/// migration is needed in the first place.
 fn migration_marker_path(logical_path: &Path) -> PathBuf {
-    let mut marker = logical_path.as_os_str().to_owned();
-    marker.push(".migrated-to");
-    PathBuf::from(marker)
+    let key = sha256_hex(logical_path.as_os_str().as_encoded_bytes());
+    let mut marker_dir = default_local_manifest_path();
+    marker_dir.pop();
+    marker_dir.join(format!("rag_index_manifest-{key}.migrated-to"))
 }
 
 fn record_migration(logical_path: &Path, destination: &Path) -> Result<()> {
     let marker = migration_marker_path(logical_path);
+    if let Some(parent) = marker.parent() {
+        std::fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create manifest migration marker directory {}",
+                parent.display()
+            )
+        })?;
+    }
     std::fs::write(&marker, destination.display().to_string()).with_context(|| {
         format!(
             "failed to record manifest migration marker at {}",

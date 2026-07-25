@@ -577,8 +577,12 @@ pub async fn doctor_checks() -> Vec<(String, String)> {
             .unwrap_or_else(|| "unknown (see vector_db_config check)".to_string()),
     ));
 
-    // Check index manifest (same resolution as runtime orchestrator)
-    let manifest_path = crate::orchestrator::rag_index_manifest_path();
+    // Check index manifest (same resolution as runtime orchestrator, following a
+    // recorded migration so this reports the manifest actually in use, not a
+    // frozen read-only source it was migrated away from)
+    let manifest_path = crate::orchestrator::effective_manifest_path_for(
+        &crate::orchestrator::rag_index_manifest_path(),
+    );
 
     let manifest_exists = manifest_path.exists();
     if manifest_exists {

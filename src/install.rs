@@ -80,10 +80,28 @@ pub fn install(
                     }
                     changes.push("updated Codex via codex mcp add".to_string());
                     // Best-effort: drop the pre-rename entry so `codex mcp list` doesn't
-                    // carry both identities. A non-zero exit just means it wasn't there.
-                    let _ = Command::new("codex")
+                    // carry both identities. A nonzero exit usually just means it wasn't
+                    // there, but surface it (with stderr, if any) instead of silently
+                    // discarding every outcome, so a real failure to remove the legacy
+                    // entry isn't masked as a clean, fully-migrated install.
+                    let output = Command::new("codex")
                         .args(["mcp", "remove", SERVER_KEY_LEGACY])
-                        .status();
+                        .output()
+                        .context("failed to run codex mcp remove")?;
+                    if output.status.success() {
+                        changes.push(format!(
+                            "removed legacy Codex config for {SERVER_KEY_LEGACY}"
+                        ));
+                    } else {
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        let stderr = stderr.trim();
+                        changes.push(format!(
+                            "codex mcp remove {SERVER_KEY_LEGACY} exited with {}{}{}",
+                            output.status,
+                            if stderr.is_empty() { "" } else { ": " },
+                            stderr
+                        ));
+                    }
                 }
             }
             ClientTarget::Cursor => {

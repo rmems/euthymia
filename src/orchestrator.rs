@@ -1134,26 +1134,9 @@ fn default_manifest_path() -> PathBuf {
         // persist, leaving the on-disk manifest permanently stale.
         for candidate in [SYSTEM_MANIFEST_PATH, SYSTEM_MANIFEST_PATH_LEGACY] {
             let system_path = PathBuf::from(candidate);
-            // symlink_metadata(), not exists(): exists() follows symlinks, so a dangling
-            // symlink at this location would report "nothing here" and fall through to
-            // the writable-directory loop below, which would then treat the same broken
-            // symlink path as a fresh location to create. symlink_metadata() sees the
-            // link itself, so a dangling symlink is still handled (and its read failure
-            // surfaces) here rather than silently reused.
-            match system_path.symlink_metadata() {
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(_) => return system_path,
-                Ok(_) => {}
+            if let Some(path) = resolve_existing_manifest_candidate(&system_path) {
+                return path;
             }
-            if is_writable_file(&system_path) {
-                return system_path;
-            }
-            if let Some(destination) = migrate_manifest(&system_path) {
-                return destination;
-            }
-            // No writable destination found; fall back to the read-only path so a save
-            // failure surfaces loudly instead of indexing against nothing.
-            return system_path;
         }
         for candidate in [SYSTEM_MANIFEST_PATH, SYSTEM_MANIFEST_PATH_LEGACY] {
             let system_path = PathBuf::from(candidate);
@@ -1170,6 +1153,34 @@ fn default_manifest_path() -> PathBuf {
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
         .join("agentos")
         .join("rag_index_manifest.json")
+}
+
+/// Resolve one system-manifest candidate. Returns `None` when nothing is at this
+/// path and the caller should try the next candidate; `Some` is the path to use
+/// immediately (whether the writable original, a migrated destination, or a
+/// broken/read-only path returned so its failure surfaces loudly instead of being
+/// silently skipped).
+fn resolve_existing_manifest_candidate(system_path: &Path) -> Option<PathBuf> {
+    // symlink_metadata(), not exists(): exists() follows symlinks, so a dangling
+    // symlink at this location would report "nothing here" and fall through to the
+    // writable-directory loop in default_manifest_path(), which would then treat the
+    // same broken symlink path as a fresh location to create. symlink_metadata() sees
+    // the link itself, so a dangling symlink is still handled (and its read failure
+    // surfaces) here rather than silently reused.
+    match system_path.symlink_metadata() {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(_) => return Some(system_path.to_path_buf()),
+        Ok(_) => {}
+    }
+    if is_writable_file(system_path) {
+        return Some(system_path.to_path_buf());
+    }
+    if let Some(destination) = migrate_manifest(system_path) {
+        return Some(destination);
+    }
+    // No writable destination found; fall back to the read-only path so a save
+    // failure surfaces loudly instead of indexing against nothing.
+    Some(system_path.to_path_buf())
 }
 
 /// Copy an existing-but-not-writable manifest's contents to the first writable

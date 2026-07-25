@@ -677,30 +677,27 @@ impl Orchestrator {
     fn ensure_manifest_writable(&self) -> Result<PathBuf> {
         let effective = self.effective_manifest_path();
         if effective.exists() {
-            if is_writable_file(&effective) {
-                return Ok(effective);
-            }
-            if let Some(destination) = migrate_manifest(&effective) {
-                record_migration(&self.manifest_path, &destination)?;
-                return Ok(destination);
-            }
-            bail!(
-                "manifest at {} is not writable and no writable destination is available; move it to a writable NeuralForge-Memory config location before indexing",
-                effective.display()
-            );
+            return self.ensure_existing_manifest_writable(&effective);
         }
-        if let Some(parent) = effective.parent() {
-            std::fs::create_dir_all(parent).with_context(|| {
-                format!("failed to create manifest directory {}", parent.display())
-            })?;
-            if !is_writable_dir(parent) {
-                bail!(
-                    "manifest directory {} is not writable; move it to a writable NeuralForge-Memory config location before indexing",
-                    parent.display()
-                );
-            }
-        }
+        ensure_manifest_parent_creatable(&effective)?;
         Ok(effective)
+    }
+
+    /// `effective` is a manifest path that already exists: return it if writable,
+    /// otherwise migrate it to a writable destination (recording where, so future
+    /// calls reuse it), or fail loudly if no writable destination is available.
+    fn ensure_existing_manifest_writable(&self, effective: &Path) -> Result<PathBuf> {
+        if is_writable_file(effective) {
+            return Ok(effective.to_path_buf());
+        }
+        if let Some(destination) = migrate_manifest(effective) {
+            record_migration(&self.manifest_path, &destination)?;
+            return Ok(destination);
+        }
+        bail!(
+            "manifest at {} is not writable and no writable destination is available; move it to a writable NeuralForge-Memory config location before indexing",
+            effective.display()
+        );
     }
 
     async fn load_manifest(&self) -> Result<IndexManifest> {
@@ -726,6 +723,20 @@ impl Orchestrator {
             .await
             .with_context(|| format!("failed to write {}", path.display()))
     }
+}
+
+fn ensure_manifest_parent_creatable(effective: &Path) -> Result<()> {
+    if let Some(parent) = effective.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create manifest directory {}", parent.display()))?;
+        if !is_writable_dir(parent) {
+            bail!(
+                "manifest directory {} is not writable; move it to a writable NeuralForge-Memory config location before indexing",
+                parent.display()
+            );
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn resolved_vector_db_config() -> Result<VectorDbConfig> {

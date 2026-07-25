@@ -46,22 +46,23 @@ impl ServerConfig {
 
 pub fn discover_repo_home() -> Result<PathBuf> {
     // Updated by Grok Build 0.1 for GitHub issue #7: prefer NEURALFORGE_MEMORY_HOME, fallback AGENTOS_CORE_HOME (legacy)
-    if let Ok(home) = env::var("NEURALFORGE_MEMORY_HOME").or_else(|_| env::var("AGENTOS_CORE_HOME"))
-    {
-        let path = PathBuf::from(home);
-        if !path.exists() {
-            bail!(
-                "NEURALFORGE_MEMORY_HOME is set but does not exist: {}",
-                path.display()
-            );
+    for var in ["NEURALFORGE_MEMORY_HOME", "AGENTOS_CORE_HOME"] {
+        match env::var(var) {
+            Ok(home) => {
+                let path = PathBuf::from(home);
+                if !path.exists() {
+                    bail!("{var} is set but does not exist: {}", path.display());
+                }
+                if !path.is_dir() {
+                    bail!("{var} is set but is not a directory: {}", path.display());
+                }
+                return Ok(path);
+            }
+            Err(env::VarError::NotPresent) => continue,
+            Err(env::VarError::NotUnicode(_)) => {
+                bail!("{var} is set but is not valid unicode");
+            }
         }
-        if !path.is_dir() {
-            bail!(
-                "NEURALFORGE_MEMORY_HOME is set but is not a directory: {}",
-                path.display()
-            );
-        }
-        return Ok(path);
     }
 
     // Walk up ancestors (starting at current dir)

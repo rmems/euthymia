@@ -43,7 +43,7 @@ enum Commands {
         client: ClientTarget,
     },
     Route {
-        #[arg(long, default_value_t = false)]
+        #[arg(long, alias = "from-env", default_value_t = false)]
         env: bool,
         #[arg(long)]
         provider: Option<String>,

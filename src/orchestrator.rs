@@ -1221,12 +1221,14 @@ fn migrate_manifest(source: &Path) -> Option<PathBuf> {
 /// (or already was) a usable manifest location.
 fn migrate_to_candidate(destination: &Path, raw: &str) -> bool {
     if destination.exists() {
-        // A prior run may have already migrated into this destination - reuse it
-        // rather than re-running the migration every startup. Only treat it as
-        // usable if it's actually a valid manifest; a corrupt or foreign file at
-        // this path is skipped (not overwritten) rather than risking data loss by
-        // clobbering unknown state.
-        return is_valid_manifest_file(destination);
+        // A prior run may have already migrated `source`'s exact content into this
+        // destination - reuse it rather than re-running the migration every startup.
+        // Require a byte-exact match against the current source content (migration
+        // writes `raw` verbatim, so a genuine prior migration of this same source
+        // reads back identically): a destination that merely happens to hold some
+        // other valid-but-unrelated manifest must not be adopted, since that would
+        // silently discard source's own tracking data instead of migrating it.
+        return is_manifest_copy_of(destination, raw);
     }
     if let Some(parent) = destination.parent()
         && std::fs::create_dir_all(parent).is_err()
@@ -1236,10 +1238,8 @@ fn migrate_to_candidate(destination: &Path, raw: &str) -> bool {
     std::fs::write(destination, raw).is_ok()
 }
 
-fn is_valid_manifest_file(path: &Path) -> bool {
-    std::fs::read_to_string(path)
-        .ok()
-        .is_some_and(|raw| serde_json::from_str::<IndexManifest>(&raw).is_ok())
+fn is_manifest_copy_of(path: &Path, raw: &str) -> bool {
+    std::fs::read_to_string(path).is_ok_and(|existing| existing == raw)
 }
 
 fn is_writable_file(path: &Path) -> bool {

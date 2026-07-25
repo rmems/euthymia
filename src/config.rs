@@ -50,6 +50,7 @@ pub fn discover_repo_home() -> Result<PathBuf> {
     // Updated by Grok Build 0.1 for GitHub issue #7: prefer NEURALFORGE_MEMORY_HOME, fallback AGENTOS_CORE_HOME (legacy)
     for var in ["NEURALFORGE_MEMORY_HOME", "AGENTOS_CORE_HOME"] {
         match env::var(var) {
+            Ok(home) if home.is_empty() => continue,
             Ok(home) => {
                 let path = PathBuf::from(home);
                 if !path.exists() {

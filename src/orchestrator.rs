@@ -653,21 +653,43 @@ impl Orchestrator {
         })
     }
 
-    /// Check the manifest can be persisted before any Qdrant mutation begins. Without
-    /// this, a read-only-but-parseable manifest is only discovered at save_manifest()
-    /// time, after ingest/rebuild have already mutated vectors - leaving the manifest
-    /// permanently unable to track state that Qdrant now reflects.
-    fn ensure_manifest_writable(&self) -> Result<()> {
-        if self.manifest_path.exists() {
-            if is_writable_file(&self.manifest_path) {
-                return Ok(());
+    /// The manifest path actually in effect right now: the recorded migration
+    /// destination if one was already established for `self.manifest_path`,
+    /// otherwise `self.manifest_path` itself. Pure read - performs no migration, so
+    /// it's safe to call from read-only contexts (health checks, doctor) without
+    /// side effects.
+    fn effective_manifest_path(&self) -> PathBuf {
+        let marker = migration_marker_path(&self.manifest_path);
+        if let Ok(recorded) = std::fs::read_to_string(&marker) {
+            let recorded = PathBuf::from(recorded.trim());
+            if !recorded.as_os_str().is_empty() && recorded.exists() {
+                return recorded;
+            }
+        }
+        self.manifest_path.clone()
+    }
+
+    /// Resolve a writable manifest path, migrating a read-only one if needed, and
+    /// return it. Callers that mutate Qdrant should call this before doing so:
+    /// without it, a read-only-but-parseable manifest is only discovered at
+    /// save_manifest() time, after vectors have already been mutated, leaving the
+    /// manifest permanently unable to track state that Qdrant now reflects.
+    fn ensure_manifest_writable(&self) -> Result<PathBuf> {
+        let effective = self.effective_manifest_path();
+        if effective.exists() {
+            if is_writable_file(&effective) {
+                return Ok(effective);
+            }
+            if let Some(destination) = migrate_manifest(&effective) {
+                record_migration(&self.manifest_path, &destination)?;
+                return Ok(destination);
             }
             bail!(
-                "manifest at {} is not writable; move it to a writable NeuralForge-Memory config location before indexing",
-                self.manifest_path.display()
+                "manifest at {} is not writable and no writable destination is available; move it to a writable NeuralForge-Memory config location before indexing",
+                effective.display()
             );
         }
-        if let Some(parent) = self.manifest_path.parent() {
+        if let Some(parent) = effective.parent() {
             std::fs::create_dir_all(parent).with_context(|| {
                 format!("failed to create manifest directory {}", parent.display())
             })?;
@@ -678,30 +700,31 @@ impl Orchestrator {
                 );
             }
         }
-        Ok(())
+        Ok(effective)
     }
 
     async fn load_manifest(&self) -> Result<IndexManifest> {
-        if tokio::fs::metadata(&self.manifest_path).await.is_err() {
+        let path = self.effective_manifest_path();
+        if tokio::fs::metadata(&path).await.is_err() {
             return Ok(IndexManifest::default());
         }
-        let raw = tokio::fs::read_to_string(&self.manifest_path)
+        let raw = tokio::fs::read_to_string(&path)
             .await
-            .with_context(|| format!("failed to read {}", self.manifest_path.display()))?;
-        serde_json::from_str(&raw)
-            .with_context(|| format!("failed to parse {}", self.manifest_path.display()))
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        serde_json::from_str(&raw).with_context(|| format!("failed to parse {}", path.display()))
     }
 
     async fn save_manifest(&self, manifest: &IndexManifest) -> Result<()> {
-        if let Some(parent) = self.manifest_path.parent() {
+        let path = self.ensure_manifest_writable()?;
+        if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent)
                 .await
                 .with_context(|| format!("failed to create {}", parent.display()))?;
         }
         let raw = serde_json::to_string_pretty(manifest)?;
-        tokio::fs::write(&self.manifest_path, raw)
+        tokio::fs::write(&path, raw)
             .await
-            .with_context(|| format!("failed to write {}", self.manifest_path.display()))
+            .with_context(|| format!("failed to write {}", path.display()))
     }
 }
 
@@ -1126,21 +1149,30 @@ pub(crate) fn rag_index_manifest_path() -> PathBuf {
         .unwrap_or_else(default_manifest_path)
 }
 
+/// Resolve where the manifest logically lives, without touching the filesystem
+/// beyond metadata/existence checks - no reads, writes, or migration happen here.
+/// This is called from read-only contexts (doctor checks, `Orchestrator::from_env`
+/// before any request arrives), so it must stay side-effect free; the actual
+/// migration of a read-only manifest to a writable location happens lazily in
+/// `Orchestrator::ensure_manifest_writable()`, right before a mutation begins.
 fn default_manifest_path() -> PathBuf {
     #[cfg(unix)]
     {
         // Prefer wherever a manifest already exists so a partial migration (new config
         // dir created, but the manifest hasn't moved yet) doesn't start indexing from an
-        // empty map and orphan vectors tracked only in the legacy manifest. If that
-        // existing manifest isn't writable (e.g. the service can read but not write the
-        // legacy /etc/agentos location), migrate its contents to a writable destination
-        // up front rather than returning the read-only path: otherwise vector mutations
-        // would happen against Qdrant before save_manifest() ever discovers it can't
-        // persist, leaving the on-disk manifest permanently stale.
+        // empty map and orphan vectors tracked only in the legacy manifest.
         for candidate in [SYSTEM_MANIFEST_PATH, SYSTEM_MANIFEST_PATH_LEGACY] {
             let system_path = PathBuf::from(candidate);
-            if let Some(path) = resolve_existing_manifest_candidate(&system_path) {
-                return path;
+            // symlink_metadata(), not exists(): exists() follows symlinks, so a
+            // dangling symlink at this location would report "nothing here" and fall
+            // through to the writable-directory loop below, which would then treat
+            // the same broken symlink path as a fresh location to create.
+            // symlink_metadata() sees the link itself, so a dangling symlink is still
+            // treated as "something is here" rather than silently skipped past.
+            match system_path.symlink_metadata() {
+                Ok(_) => return system_path,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => return system_path,
             }
         }
         for candidate in [SYSTEM_MANIFEST_PATH, SYSTEM_MANIFEST_PATH_LEGACY] {
@@ -1164,32 +1196,23 @@ fn default_local_manifest_path() -> PathBuf {
         .join("rag_index_manifest.json")
 }
 
-/// Resolve one system-manifest candidate. Returns `None` when nothing is at this
-/// path and the caller should try the next candidate; `Some` is the path to use
-/// immediately (whether the writable original, a migrated destination, or a
-/// broken/read-only path returned so its failure surfaces loudly instead of being
-/// silently skipped).
-fn resolve_existing_manifest_candidate(system_path: &Path) -> Option<PathBuf> {
-    // symlink_metadata(), not exists(): exists() follows symlinks, so a dangling
-    // symlink at this location would report "nothing here" and fall through to the
-    // writable-directory loop in default_manifest_path(), which would then treat the
-    // same broken symlink path as a fresh location to create. symlink_metadata() sees
-    // the link itself, so a dangling symlink is still handled (and its read failure
-    // surfaces) here rather than silently reused.
-    match system_path.symlink_metadata() {
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return None,
-        Err(_) => return Some(system_path.to_path_buf()),
-        Ok(_) => {}
-    }
-    if is_writable_file(system_path) {
-        return Some(system_path.to_path_buf());
-    }
-    if let Some(destination) = migrate_manifest(system_path) {
-        return Some(destination);
-    }
-    // No writable destination found; fall back to the read-only path so a save
-    // failure surfaces loudly instead of indexing against nothing.
-    Some(system_path.to_path_buf())
+/// Path of the marker file recording where `logical_path` was migrated to, so the
+/// migration destination survives even after its content diverges from the
+/// (frozen, read-only) source through normal saves.
+fn migration_marker_path(logical_path: &Path) -> PathBuf {
+    let mut marker = logical_path.as_os_str().to_owned();
+    marker.push(".migrated-to");
+    PathBuf::from(marker)
+}
+
+fn record_migration(logical_path: &Path, destination: &Path) -> Result<()> {
+    let marker = migration_marker_path(logical_path);
+    std::fs::write(&marker, destination.display().to_string()).with_context(|| {
+        format!(
+            "failed to record manifest migration marker at {}",
+            marker.display()
+        )
+    })
 }
 
 /// Copy an existing-but-not-writable manifest's contents to the first writable

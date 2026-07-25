@@ -79,15 +79,23 @@ async fn main() -> Result<()> {
         Commands::Route { env, provider } => {
             let built_in = ModelRouter::built_in_defaults();
             let config_router = ModelRouter::load_system_config_if_present()?;
-            let has_role_env = ProviderRole::all().iter().any(|role| {
-                [role.to_env_key(), role.to_legacy_env_key()]
-                    .into_iter()
-                    .any(|key| {
-                        std::env::var(key)
-                            .ok()
-                            .is_some_and(|value| !value.trim().is_empty())
-                    })
-            });
+            let mut has_role_env = false;
+            for role in ProviderRole::all() {
+                for key in [role.to_env_key(), role.to_legacy_env_key()] {
+                    match std::env::var(&key) {
+                        Ok(value) if !value.trim().is_empty() => has_role_env = true,
+                        Ok(_) => {}
+                        Err(std::env::VarError::NotPresent) => {}
+                        // Explicitly-set-but-invalid-Unicode is a misconfiguration and
+                        // must be reported, not silently treated as "no role env set" -
+                        // that would route quietly to system/built-in defaults instead
+                        // of surfacing the broken deployment.
+                        Err(std::env::VarError::NotUnicode(_)) => {
+                            bail!("{key} is set but is not valid unicode");
+                        }
+                    }
+                }
+            }
 
             let overrides = if env || has_role_env {
                 ModelRouter::from_env()?

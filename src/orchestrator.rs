@@ -164,7 +164,7 @@ impl Orchestrator {
             batch_size: env_usize("BATCH_SIZE", 128).max(1),
             chunk_tokens: env_usize("CHUNK_TOKENS", 800).max(1),
             chunk_overlap: env_f32("CHUNK_OVERLAP", 0.25).clamp(0.0, 0.95),
-            manifest_path: rag_index_manifest_path(),
+            manifest_path: rag_index_manifest_path()?,
             vector_db,
             ollama,
         })
@@ -1141,14 +1141,29 @@ fn sha256_hex(bytes: &[u8]) -> String {
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-pub(crate) fn rag_index_manifest_path() -> PathBuf {
-    // Prefer NeuralForge env names; AGENTOS_*/RAG_* kept as transition fallbacks (#7 / PR#8).
-    env_string("NEURALFORGE_RAG_INDEX_MANIFEST")
-        .or_else(|| env_string("NEURALFORGE_MEMORY_RAG_INDEX_MANIFEST"))
-        .or_else(|| env_string("AGENTOS_RAG_INDEX_MANIFEST"))
-        .or_else(|| env_string("RAG_INDEX_MANIFEST"))
-        .map(PathBuf::from)
-        .unwrap_or_else(default_manifest_path)
+/// Prefer NeuralForge env names; AGENTOS_*/RAG_* kept as transition fallbacks (#7 /
+/// PR#8). Unlike `env_string`, an explicitly-set-but-invalid-Unicode override is a
+/// misconfiguration and is reported rather than silently treated as unset: a valid
+/// filesystem path can contain non-UTF-8 bytes on Unix, so quietly falling through
+/// to a legacy or default manifest would start indexing against the wrong tracking
+/// state instead of surfacing the broken deployment.
+pub(crate) fn rag_index_manifest_path() -> Result<PathBuf> {
+    for var in [
+        "NEURALFORGE_RAG_INDEX_MANIFEST",
+        "NEURALFORGE_MEMORY_RAG_INDEX_MANIFEST",
+        "AGENTOS_RAG_INDEX_MANIFEST",
+        "RAG_INDEX_MANIFEST",
+    ] {
+        match std::env::var(var) {
+            Ok(value) if !value.trim().is_empty() => return Ok(PathBuf::from(value)),
+            Ok(_) => {}
+            Err(std::env::VarError::NotPresent) => {}
+            Err(std::env::VarError::NotUnicode(_)) => {
+                bail!("{var} is set but is not valid unicode");
+            }
+        }
+    }
+    Ok(default_manifest_path())
 }
 
 /// Resolve where the manifest logically lives, without touching the filesystem

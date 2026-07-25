@@ -580,35 +580,41 @@ pub async fn doctor_checks() -> Vec<(String, String)> {
     // Check index manifest (same resolution as runtime orchestrator, following a
     // recorded migration so this reports the manifest actually in use, not a
     // frozen read-only source it was migrated away from)
-    let manifest_path = crate::orchestrator::effective_manifest_path_for(
-        &crate::orchestrator::rag_index_manifest_path(),
-    );
-
-    let manifest_exists = manifest_path.exists();
-    if manifest_exists {
-        if let Ok(raw) = std::fs::read_to_string(&manifest_path) {
-            match crate::orchestrator::manifest_chunk_count(&raw) {
-                Ok(chunk_count) => {
+    match crate::orchestrator::rag_index_manifest_path() {
+        Ok(logical_path) => {
+            let manifest_path = crate::orchestrator::effective_manifest_path_for(&logical_path);
+            if manifest_path.exists() {
+                if let Ok(raw) = std::fs::read_to_string(&manifest_path) {
+                    match crate::orchestrator::manifest_chunk_count(&raw) {
+                        Ok(chunk_count) => {
+                            checks.push((
+                                "index_manifest".to_string(),
+                                format!("exists ({} chunks)", chunk_count),
+                            ));
+                        }
+                        Err(_) => {
+                            checks.push((
+                                "index_manifest".to_string(),
+                                "exists (invalid)".to_string(),
+                            ));
+                        }
+                    }
+                } else {
                     checks.push((
                         "index_manifest".to_string(),
-                        format!("exists ({} chunks)", chunk_count),
+                        "exists (unreadable)".to_string(),
                     ));
                 }
-                Err(_) => {
-                    checks.push(("index_manifest".to_string(), "exists (invalid)".to_string()));
-                }
+            } else {
+                checks.push((
+                    "index_manifest".to_string(),
+                    format!("not found ({})", manifest_path.display()),
+                ));
             }
-        } else {
-            checks.push((
-                "index_manifest".to_string(),
-                "exists (unreadable)".to_string(),
-            ));
         }
-    } else {
-        checks.push((
-            "index_manifest".to_string(),
-            format!("not found ({})", manifest_path.display()),
-        ));
+        Err(err) => {
+            checks.push(("index_manifest".to_string(), format!("error: {err}")));
+        }
     }
 
     checks

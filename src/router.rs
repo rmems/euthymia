@@ -8,11 +8,20 @@ const SYSTEM_ROUTER_CONFIG_PATH: &str = "/etc/neuralforge-memory/configs/model_r
 #[cfg(unix)]
 const SYSTEM_ROUTER_CONFIG_PATH_LEGACY: &str = "/etc/agentos/configs/model_router.json";
 
-fn env_non_empty(name: &str) -> Option<String> {
-    env::var(name)
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
+/// `Ok(None)` means the variable is genuinely unset (or set-but-empty). An
+/// explicitly-set-but-not-valid-Unicode value is a misconfiguration and must be
+/// reported, not silently treated as unset - that would mask a preferred override
+/// in favor of a lower-priority fallback (or the built-in default) instead of
+/// surfacing the broken deployment.
+fn env_non_empty(name: &str) -> Result<Option<String>> {
+    match env::var(name) {
+        Ok(value) => {
+            let trimmed = value.trim().to_string();
+            Ok((!trimmed.is_empty()).then_some(trimmed))
+        }
+        Err(env::VarError::NotPresent) => Ok(None),
+        Err(env::VarError::NotUnicode(_)) => bail!("{name} is set but is not valid unicode"),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -238,8 +247,11 @@ impl ModelRouter {
         for role in all_roles {
             let key = role.to_env_key();
             let legacy_key = role.to_legacy_env_key();
-            let Some(provider_str) = env_non_empty(&key).or_else(|| env_non_empty(&legacy_key))
-            else {
+            let provider_str = match env_non_empty(&key)? {
+                Some(value) => Some(value),
+                None => env_non_empty(&legacy_key)?,
+            };
+            let Some(provider_str) = provider_str else {
                 continue;
             };
 
@@ -253,7 +265,7 @@ impl ModelRouter {
             };
 
             if let Some(key_var) = provider.api_key_env_var()
-                && env_non_empty(key_var).is_none()
+                && env_non_empty(key_var)?.is_none()
             {
                 bail!(
                     "{} is required for {} provider in role {} but not set",
@@ -263,8 +275,10 @@ impl ModelRouter {
                 );
             }
 
-            let model = env_non_empty(&format!("{key}_MODEL"))
-                .or_else(|| env_non_empty(&format!("{legacy_key}_MODEL")));
+            let model = match env_non_empty(&format!("{key}_MODEL"))? {
+                Some(value) => Some(value),
+                None => env_non_empty(&format!("{legacy_key}_MODEL"))?,
+            };
             roles.push(RoleProvider {
                 role,
                 provider,

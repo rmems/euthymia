@@ -1217,7 +1217,18 @@ pub(crate) fn effective_manifest_path_for(logical_path: &Path) -> PathBuf {
 /// `logical_path` itself, since that location is exactly what's unwritable when a
 /// migration is needed in the first place.
 fn migration_marker_path(logical_path: &Path) -> PathBuf {
-    let key = sha256_hex(logical_path.as_os_str().as_encoded_bytes());
+    // Resolve against the current directory before hashing: two deployments with
+    // different working directories that both set RAG_INDEX_MANIFEST to the same
+    // relative path would otherwise hash to the identical marker in the shared
+    // user-local data dir and end up following each other's migration destination.
+    let absolute = if logical_path.is_absolute() {
+        logical_path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(logical_path))
+            .unwrap_or_else(|_| logical_path.to_path_buf())
+    };
+    let key = sha256_hex(absolute.as_os_str().as_encoded_bytes());
     let mut marker_dir = default_local_manifest_path();
     marker_dir.pop();
     marker_dir.join(format!("rag_index_manifest-{key}.migrated-to"))
@@ -1276,8 +1287,11 @@ fn migrate_to_candidate(destination: &Path, raw: &str) -> bool {
         // writes `raw` verbatim, so a genuine prior migration of this same source
         // reads back identically): a destination that merely happens to hold some
         // other valid-but-unrelated manifest must not be adopted, since that would
-        // silently discard source's own tracking data instead of migrating it.
-        return is_manifest_copy_of(destination, raw);
+        // silently discard source's own tracking data instead of migrating it. Also
+        // require it to still be writable - a byte-identical but now-read-only
+        // candidate must not be reported usable, or the preflight would pass while
+        // the eventual save still fails after Qdrant has already been mutated.
+        return is_writable_file(destination) && is_manifest_copy_of(destination, raw);
     }
     if let Some(parent) = destination.parent()
         && std::fs::create_dir_all(parent).is_err()

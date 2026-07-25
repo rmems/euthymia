@@ -199,16 +199,30 @@ pub fn uninstall(
                 } else {
                     // Best-effort for both names: an upgraded install may have only the
                     // legacy entry, a fresh one may have only the new entry, and a
-                    // partially-migrated one could have neither or both. A nonzero exit
-                    // just means that particular entry wasn't registered - not a real
-                    // failure to surface, and not a reason to skip trying the other name.
+                    // partially-migrated one could have neither or both, so a nonzero
+                    // exit isn't automatically a real failure - it's not a reason to
+                    // skip trying the other name either. But it also isn't automatically
+                    // fine: it could be a genuine problem (unreadable/unwritable Codex
+                    // config). Rather than guessing which from the exit code alone,
+                    // surface every nonzero exit as a change-log entry (with stderr, if
+                    // any) instead of silently dropping it, so uninstall can't quietly
+                    // report success while a registration is still actually there.
                     for key in [SERVER_KEY, SERVER_KEY_LEGACY] {
-                        let status = Command::new("codex")
+                        let output = Command::new("codex")
                             .args(["mcp", "remove", key])
-                            .status()
+                            .output()
                             .context("failed to run codex mcp remove")?;
-                        if status.success() {
+                        if output.status.success() {
                             changes.push(format!("removed Codex config for {key}"));
+                        } else {
+                            let stderr = String::from_utf8_lossy(&output.stderr);
+                            let stderr = stderr.trim();
+                            changes.push(format!(
+                                "codex mcp remove {key} exited with {}{}{}",
+                                output.status,
+                                if stderr.is_empty() { "" } else { ": " },
+                                stderr
+                            ));
                         }
                     }
                 }
@@ -445,9 +459,11 @@ async fn codex_has_server_status() -> String {
         return format!("error: exit {}", output.status);
     }
 
-    let configured = String::from_utf8_lossy(&output.stdout).contains(SERVER_KEY);
-    if configured {
+    let output_text = String::from_utf8_lossy(&output.stdout);
+    if output_text.contains(SERVER_KEY) {
         "configured".to_string()
+    } else if output_text.contains(SERVER_KEY_LEGACY) {
+        "configured (legacy agentos-core; re-run install to migrate)".to_string()
     } else {
         "not configured".to_string()
     }

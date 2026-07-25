@@ -79,20 +79,36 @@ async fn main() -> Result<()> {
         Commands::Route { env, provider } => {
             let built_in = ModelRouter::built_in_defaults();
             let config_router = ModelRouter::load_system_config_if_present()?;
+            // Mirrors ModelRouter::from_env()'s per-role precedence: only consult the
+            // legacy key for a role once the new one is confirmed absent/empty for
+            // that same role. Scanning both unconditionally would let an irrelevant,
+            // invalid-Unicode legacy variable abort `route` even when the preferred
+            // new-named override for that role is already valid and would shadow it.
             let mut has_role_env = false;
             for role in ProviderRole::all() {
-                for key in [role.to_env_key(), role.to_legacy_env_key()] {
-                    match std::env::var(&key) {
-                        Ok(value) if !value.trim().is_empty() => has_role_env = true,
-                        Ok(_) => {}
-                        Err(std::env::VarError::NotPresent) => {}
-                        // Explicitly-set-but-invalid-Unicode is a misconfiguration and
-                        // must be reported, not silently treated as "no role env set" -
-                        // that would route quietly to system/built-in defaults instead
-                        // of surfacing the broken deployment.
-                        Err(std::env::VarError::NotUnicode(_)) => {
-                            bail!("{key} is set but is not valid unicode");
-                        }
+                let key = role.to_env_key();
+                let found = match std::env::var(&key) {
+                    Ok(value) => !value.trim().is_empty(),
+                    Err(std::env::VarError::NotPresent) => false,
+                    // Explicitly-set-but-invalid-Unicode is a misconfiguration and must
+                    // be reported, not silently treated as "no role env set" - that
+                    // would route quietly to system/built-in defaults instead of
+                    // surfacing the broken deployment.
+                    Err(std::env::VarError::NotUnicode(_)) => {
+                        bail!("{key} is set but is not valid unicode");
+                    }
+                };
+                if found {
+                    has_role_env = true;
+                    continue;
+                }
+                let legacy_key = role.to_legacy_env_key();
+                match std::env::var(&legacy_key) {
+                    Ok(value) if !value.trim().is_empty() => has_role_env = true,
+                    Ok(_) => {}
+                    Err(std::env::VarError::NotPresent) => {}
+                    Err(std::env::VarError::NotUnicode(_)) => {
+                        bail!("{legacy_key} is set but is not valid unicode");
                     }
                 }
             }

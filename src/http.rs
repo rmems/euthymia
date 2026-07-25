@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use axum::body::Body;
 use axum::extract::{Request, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -24,23 +24,7 @@ struct HttpState {
 pub async fn serve(bind: &str) -> Result<()> {
     let state = Arc::new(HttpState {
         orchestrator: Arc::new(Orchestrator::from_env()?),
-        // Prefer NeuralForge env names; AGENTOS_RAG_JWT kept as transition fallback (#7 / PR#8).
-        // Each candidate is trimmed/emptiness-checked before find_map moves on, so an
-        // empty deployment-template override (e.g. NEURALFORGE_RAG_JWT="") doesn't win
-        // over a real token in a lower-priority variable and silently disable auth.
-        auth_token: [
-            "NEURALFORGE_RAG_JWT",
-            "NEURALFORGE_MEMORY_RAG_JWT",
-            "AGENTOS_RAG_JWT",
-        ]
-        .into_iter()
-        .find_map(|name| {
-            std::env::var(name)
-                .ok()
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty())
-        })
-        .map(Arc::<str>::from),
+        auth_token: resolve_auth_token()?,
     });
     let app = Router::new()
         .route("/ingest/file", post(ingest_file))
@@ -62,6 +46,36 @@ pub async fn serve(bind: &str) -> Result<()> {
     axum::serve(listener, app)
         .await
         .context("RAG HTTP server failed")
+}
+
+/// Resolve the bearer token to require, preferring NeuralForge env names with
+/// AGENTOS_RAG_JWT kept as a transition fallback (#7 / PR#8). Each candidate is
+/// trimmed and emptiness-checked in isolation before moving to the next, so an
+/// empty deployment-template override (e.g. NEURALFORGE_RAG_JWT="") doesn't win
+/// over a real token in a lower-priority variable and silently disable auth. An
+/// explicitly-set-but-not-valid-Unicode override is a misconfiguration and must be
+/// reported, not silently treated as unset - a `.ok()` on that error would have
+/// disabled authentication entirely instead of surfacing the broken deployment.
+fn resolve_auth_token() -> Result<Option<Arc<str>>> {
+    for name in [
+        "NEURALFORGE_RAG_JWT",
+        "NEURALFORGE_MEMORY_RAG_JWT",
+        "AGENTOS_RAG_JWT",
+    ] {
+        match std::env::var(name) {
+            Ok(value) => {
+                let trimmed = value.trim().to_string();
+                if !trimmed.is_empty() {
+                    return Ok(Some(Arc::<str>::from(trimmed)));
+                }
+            }
+            Err(std::env::VarError::NotPresent) => {}
+            Err(std::env::VarError::NotUnicode(_)) => {
+                bail!("{name} is set but is not valid unicode");
+            }
+        }
+    }
+    Ok(None)
 }
 
 async fn auth(

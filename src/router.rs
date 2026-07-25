@@ -8,6 +8,13 @@ const SYSTEM_ROUTER_CONFIG_PATH: &str = "/etc/neuralforge-memory/configs/model_r
 #[cfg(unix)]
 const SYSTEM_ROUTER_CONFIG_PATH_LEGACY: &str = "/etc/agentos/configs/model_router.json";
 
+fn env_non_empty(name: &str) -> Option<String> {
+    env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ModelProvider {
@@ -106,6 +113,19 @@ pub enum ProviderRole {
 
 impl ProviderRole {
     pub fn to_env_key(&self) -> String {
+        match self {
+            Self::DefaultCoding => "NEURALFORGE_ROLE_DEFAULT_CODING".to_string(),
+            Self::LongContext => "NEURALFORGE_ROLE_LONG_CONTEXT".to_string(),
+            Self::LocalPrivate => "NEURALFORGE_ROLE_LOCAL_PRIVATE".to_string(),
+            Self::RagEmbedding => "NEURALFORGE_ROLE_RAG_EMBEDDING".to_string(),
+            Self::RagEmbeddingCloud => "NEURALFORGE_ROLE_RAG_EMBEDDING_CLOUD".to_string(),
+            Self::CudaGpu => "NEURALFORGE_ROLE_CUDA_GPU".to_string(),
+            Self::Fallback => "NEURALFORGE_ROLE_FALLBACK".to_string(),
+        }
+    }
+
+    /// Legacy AgentOS-named env key, kept as a transition fallback (#7 / PR#8).
+    pub fn to_legacy_env_key(&self) -> String {
         match self {
             Self::DefaultCoding => "AGENTOS_ROLE_DEFAULT_CODING".to_string(),
             Self::LongContext => "AGENTOS_ROLE_LONG_CONTEXT".to_string(),
@@ -217,10 +237,8 @@ impl ModelRouter {
 
         for role in all_roles {
             let key = role.to_env_key();
-            let Some(provider_str) = env::var(&key)
-                .ok()
-                .map(|v| v.trim().to_string())
-                .filter(|v| !v.is_empty())
+            let legacy_key = role.to_legacy_env_key();
+            let Some(provider_str) = env_non_empty(&key).or_else(|| env_non_empty(&legacy_key))
             else {
                 continue;
             };
@@ -234,26 +252,19 @@ impl ModelRouter {
                 );
             };
 
-            if let Some(key_var) = provider.api_key_env_var() {
-                let has_key = env::var(key_var)
-                    .ok()
-                    .map(|v| v.trim().to_string())
-                    .filter(|v| !v.is_empty())
-                    .is_some();
-                if !has_key {
-                    bail!(
-                        "{} is required for {} provider in role {} but not set",
-                        key_var,
-                        provider.name(),
-                        role.name()
-                    );
-                }
+            if let Some(key_var) = provider.api_key_env_var()
+                && env_non_empty(key_var).is_none()
+            {
+                bail!(
+                    "{} is required for {} provider in role {} but not set",
+                    key_var,
+                    provider.name(),
+                    role.name()
+                );
             }
 
-            let model = env::var(format!("{key}_MODEL"))
-                .ok()
-                .map(|v| v.trim().to_string())
-                .filter(|v| !v.is_empty());
+            let model = env_non_empty(&format!("{key}_MODEL"))
+                .or_else(|| env_non_empty(&format!("{legacy_key}_MODEL")));
             roles.push(RoleProvider {
                 role,
                 provider,
@@ -285,10 +296,11 @@ mod tests {
 
     fn clear_role_env() {
         for role in ProviderRole::all() {
-            let key = role.to_env_key();
-            unsafe {
-                std::env::remove_var(&key);
-                std::env::remove_var(format!("{key}_MODEL"));
+            for key in [role.to_env_key(), role.to_legacy_env_key()] {
+                unsafe {
+                    std::env::remove_var(&key);
+                    std::env::remove_var(format!("{key}_MODEL"));
+                }
             }
         }
         for key in [
@@ -350,12 +362,34 @@ mod tests {
     fn provider_role_env_keys_are_correct() {
         assert_eq!(
             ProviderRole::DefaultCoding.to_env_key(),
-            "AGENTOS_ROLE_DEFAULT_CODING"
+            "NEURALFORGE_ROLE_DEFAULT_CODING"
         );
         assert_eq!(
             ProviderRole::RagEmbedding.to_env_key(),
+            "NEURALFORGE_ROLE_RAG_EMBEDDING"
+        );
+        assert_eq!(
+            ProviderRole::DefaultCoding.to_legacy_env_key(),
+            "AGENTOS_ROLE_DEFAULT_CODING"
+        );
+        assert_eq!(
+            ProviderRole::RagEmbedding.to_legacy_env_key(),
             "AGENTOS_ROLE_RAG_EMBEDDING"
         );
+    }
+
+    #[test]
+    fn env_parsing_new_role_key_takes_precedence_over_legacy() {
+        with_env_lock(|| {
+            clear_role_env();
+            unsafe {
+                std::env::set_var("NEURALFORGE_ROLE_DEFAULT_CODING", "codex");
+                std::env::set_var("AGENTOS_ROLE_DEFAULT_CODING", "opencode");
+            }
+            let router = ModelRouter::from_env().unwrap();
+            let rp = router.get_provider(ProviderRole::DefaultCoding).unwrap();
+            assert_eq!(rp.provider, ModelProvider::Codex);
+        });
     }
 
     #[test]

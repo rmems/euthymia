@@ -80,9 +80,13 @@ async fn main() -> Result<()> {
             let built_in = ModelRouter::built_in_defaults();
             let config_router = ModelRouter::load_system_config_if_present()?;
             let has_role_env = ProviderRole::all().iter().any(|role| {
-                std::env::var(role.to_env_key())
-                    .ok()
-                    .is_some_and(|value| !value.trim().is_empty())
+                [role.to_env_key(), role.to_legacy_env_key()]
+                    .into_iter()
+                    .any(|key| {
+                        std::env::var(key)
+                            .ok()
+                            .is_some_and(|value| !value.trim().is_empty())
+                    })
             });
 
             let overrides = if env || has_role_env {

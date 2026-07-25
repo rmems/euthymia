@@ -81,6 +81,17 @@ pub fn discover_repo_home() -> Result<PathBuf> {
     )
 }
 
+/// Resolve a system config file path: prefer the NeuralForge-Memory location if it
+/// exists, falling back to the legacy AgentOS location for the #7 transition.
+pub fn resolve_system_config_path(neuralforge_path: &str, legacy_path: &str) -> PathBuf {
+    let neuralforge = Path::new(neuralforge_path);
+    if neuralforge.exists() {
+        neuralforge.to_path_buf()
+    } else {
+        PathBuf::from(legacy_path)
+    }
+}
+
 /// Split `RAG_REPO_ROOTS` using the platform path separator rules (`:` vs `;`).
 pub fn parse_rag_repo_roots(value: &OsStr) -> Vec<PathBuf> {
     env::split_paths(value)

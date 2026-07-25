@@ -11,7 +11,7 @@ environment="${SENTRY_ENVIRONMENT:-local}"
 git_sha="${AGENTOS_GIT_SHA:-$(git rev-parse --short HEAD 2>/dev/null || printf 'unknown')}"
 run_id="${AGENTOS_RUN_ID:-${repo}-${git_sha}}"
 release="${repo}@${git_sha}"
-entity_search="${NEW_RELIC_ENTITY_SEARCH_AGENTOS_CORE:-}"  # legacy var; update for NeuralForge-Memory
+entity_search="${NEW_RELIC_ENTITY_SEARCH_NEURALFORGE_MEMORY:-${NEW_RELIC_ENTITY_SEARCH_AGENTOS_CORE:-}}"
 actor="${NEW_RELIC_USER:-neuralforge}"  # was "agentos"
 
 if [[ -z "${NEW_RELIC_ACCOUNT_ID:-}" ]]; then

@@ -13,7 +13,8 @@ use crate::tools::ollama::{OllamaConfig, ollama_embed};
 use crate::tools::qdrant::{QdrantVectorRecord, qdrant_delete_vectors, qdrant_upsert_vectors};
 
 #[cfg(unix)]
-const SYSTEM_MANIFEST_PATH: &str = "/etc/agentos/configs/rag_index_manifest.json";
+const SYSTEM_MANIFEST_PATH: &str = "/etc/neuralforge-memory/configs/rag_index_manifest.json";
+const SYSTEM_MANIFEST_PATH_LEGACY: &str = "/etc/agentos/configs/rag_index_manifest.json";
 const DEFAULT_COLLECTION: &str = "repos";
 const DEFAULT_EMBEDDING_MODEL: &str = "nomic-embed-text:latest";
 const DEFAULT_QDRANT_HOST: &str = "http://127.0.0.1:6333";
@@ -1082,13 +1083,15 @@ pub(crate) fn rag_index_manifest_path() -> PathBuf {
 fn default_manifest_path() -> PathBuf {
     #[cfg(unix)]
     {
-        let system_path = PathBuf::from(SYSTEM_MANIFEST_PATH);
-        if system_path
-            .parent()
-            .map(|parent| parent.is_dir() && is_writable_dir(parent))
-            .unwrap_or(false)
-        {
-            return system_path;
+        for candidate in [SYSTEM_MANIFEST_PATH, SYSTEM_MANIFEST_PATH_LEGACY] {
+            let system_path = PathBuf::from(candidate);
+            if system_path
+                .parent()
+                .map(|parent| parent.is_dir() && is_writable_dir(parent))
+                .unwrap_or(false)
+            {
+                return system_path;
+            }
         }
     }
     dirs::data_local_dir()

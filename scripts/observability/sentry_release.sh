@@ -6,7 +6,7 @@ repo="neuralforge-memory"
 org="${SENTRY_ORG:-}"
 project="${SENTRY_PROJECT_NEURALFORGE_MEMORY:-${SENTRY_PROJECT_AGENTOS_CORE:-}}"
 environment="${SENTRY_ENVIRONMENT:-local}"
-git_sha="${AGENTOS_GIT_SHA:-$(git rev-parse --short HEAD 2>/dev/null || printf 'unknown')}"
+git_sha="${NEURALFORGE_GIT_SHA:-${AGENTOS_GIT_SHA:-$(git rev-parse --short HEAD 2>/dev/null || printf 'unknown')}}"
 release="${repo}@${git_sha}"
 
 if [[ -z "${org}" ]]; then

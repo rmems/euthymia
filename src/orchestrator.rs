@@ -1194,7 +1194,7 @@ fn default_manifest_path() -> PathBuf {
 fn default_local_manifest_path() -> PathBuf {
     dirs::data_local_dir()
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
-        .join("agentos")
+        .join("neuralforge-memory")
         .join("rag_index_manifest.json")
 }
 
@@ -1350,10 +1350,10 @@ mod tests {
 
     #[test]
     fn vector_id_is_stable_sha256_hex() {
-        let id = chunk_id("agentos-core:src/main.rs", 3);
+        let id = chunk_id("neuralforge-memory:src/main.rs", 3);
         assert_eq!(id.len(), 64);
-        assert_eq!(id, chunk_id("agentos-core:src/main.rs", 3));
-        assert_ne!(id, chunk_id("agentos-core:src/main.rs", 4));
+        assert_eq!(id, chunk_id("neuralforge-memory:src/main.rs", 3));
+        assert_ne!(id, chunk_id("neuralforge-memory:src/main.rs", 4));
     }
 
     #[test]

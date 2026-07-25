@@ -483,9 +483,17 @@ pub async fn doctor_checks() -> Vec<(String, String)> {
     };
 
     // Check Qdrant
-    let vector_db = crate::orchestrator::resolved_vector_db_config();
-    let qdrant_host = vector_db.host.trim_end_matches('/').to_string();
-    checks.push(http_health(&client, "qdrant", &format!("{}/readyz", qdrant_host)).await);
+    let vector_db = match crate::orchestrator::resolved_vector_db_config() {
+        Ok(vector_db) => {
+            let qdrant_host = vector_db.host.trim_end_matches('/').to_string();
+            checks.push(http_health(&client, "qdrant", &format!("{}/readyz", qdrant_host)).await);
+            Some(vector_db)
+        }
+        Err(err) => {
+            checks.push(("vector_db_config".to_string(), format!("error: {err}")));
+            None
+        }
+    };
 
     let ollama_endpoint = crate::orchestrator::resolve_ollama_endpoint();
     let ollama_health = if std::env::var("OLLAMA_ENDPOINT")
@@ -562,7 +570,12 @@ pub async fn doctor_checks() -> Vec<(String, String)> {
     }
 
     // Check RAG_COLLECTION
-    checks.push(("RAG_COLLECTION".to_string(), vector_db.collection));
+    checks.push((
+        "RAG_COLLECTION".to_string(),
+        vector_db
+            .map(|vector_db| vector_db.collection)
+            .unwrap_or_else(|| "unknown (see vector_db_config check)".to_string()),
+    ));
 
     // Check index manifest (same resolution as runtime orchestrator)
     let manifest_path = crate::orchestrator::rag_index_manifest_path();

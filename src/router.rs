@@ -184,8 +184,18 @@ impl ModelRouter {
                 SYSTEM_ROUTER_CONFIG_PATH,
                 SYSTEM_ROUTER_CONFIG_PATH_LEGACY,
             )?;
-            if !path.exists() {
-                return Ok(None);
+            // symlink_metadata(), not exists(): exists() follows symlinks, so a dangling
+            // symlink at the resolved path would report "nothing here" and silently fall
+            // back to built-in routing - the exact masking resolve_system_config_path was
+            // hardened to avoid. symlink_metadata() sees the link itself, so a dangling
+            // symlink is treated as "something is here" and its read failure below is
+            // surfaced instead of swallowed.
+            match path.symlink_metadata() {
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(err) => {
+                    return Err(err).with_context(|| format!("failed to check {}", path.display()));
+                }
+                Ok(_) => {}
             }
             let raw = std::fs::read_to_string(&path)
                 .with_context(|| format!("failed to read {}", path.display()))?;

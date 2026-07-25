@@ -148,7 +148,7 @@ struct ChunkMetadata {
 
 impl Orchestrator {
     pub fn from_env() -> Result<Self> {
-        let vector_db = resolved_vector_db_config();
+        let vector_db = resolved_vector_db_config()?;
         let collection = vector_db.collection.clone();
 
         let embedding_model =
@@ -171,6 +171,9 @@ impl Orchestrator {
     }
 
     pub async fn ingest_file(&self, request: FileIngestRequest) -> Result<OperationSummary> {
+        if !request.dry_run {
+            self.ensure_manifest_writable()?;
+        }
         let started = Instant::now();
         emit_event("ingest_started", 0, 0, 0, None, started);
         let (repo, relative_path) = split_source_path(&request.path);
@@ -193,6 +196,9 @@ impl Orchestrator {
     }
 
     pub async fn ingest_diff(&self, request: DiffIngestRequest) -> Result<OperationSummary> {
+        if !request.dry_run {
+            self.ensure_manifest_writable()?;
+        }
         let started = Instant::now();
         emit_event("ingest_started", 0, 0, 0, None, started);
         let repo_root = resolve_repo_root(&request.repo)?;
@@ -274,6 +280,9 @@ impl Orchestrator {
     }
 
     pub async fn rebuild(&self, request: RebuildRequest) -> Result<OperationSummary> {
+        if !request.dry_run {
+            self.ensure_manifest_writable()?;
+        }
         let started = Instant::now();
         emit_event("rebuild_started", 0, 0, 0, None, started);
         self.ensure_collection(&request.collection)?;
@@ -351,6 +360,7 @@ impl Orchestrator {
         let manifest = self.load_manifest().await?;
         let ids = manifest.chunks.keys().cloned().collect::<Vec<_>>();
         if request.mode == "all" {
+            self.ensure_manifest_writable()?;
             let summary = self
                 .vectors_delete(VectorDeleteRequest {
                     collection: self.collection.clone(),
@@ -643,6 +653,29 @@ impl Orchestrator {
         })
     }
 
+    /// Check the manifest can be persisted before any Qdrant mutation begins. Without
+    /// this, a read-only-but-parseable manifest is only discovered at save_manifest()
+    /// time, after ingest/rebuild have already mutated vectors - leaving the manifest
+    /// permanently unable to track state that Qdrant now reflects.
+    fn ensure_manifest_writable(&self) -> Result<()> {
+        if self.manifest_path.exists() {
+            if !is_writable_file(&self.manifest_path) {
+                bail!(
+                    "manifest at {} is not writable; move it to a writable NeuralForge-Memory config location before indexing",
+                    self.manifest_path.display()
+                );
+            }
+        } else if let Some(parent) = self.manifest_path.parent() {
+            if parent.is_dir() && !is_writable_dir(parent) {
+                bail!(
+                    "manifest directory {} is not writable; move it to a writable NeuralForge-Memory config location before indexing",
+                    parent.display()
+                );
+            }
+        }
+        Ok(())
+    }
+
     async fn load_manifest(&self) -> Result<IndexManifest> {
         if tokio::fs::metadata(&self.manifest_path).await.is_err() {
             return Ok(IndexManifest::default());
@@ -667,20 +700,28 @@ impl Orchestrator {
     }
 }
 
-pub(crate) fn resolved_vector_db_config() -> VectorDbConfig {
-    let mut vector_db = load_vector_db_config().unwrap_or_else(|_| VectorDbConfig {
-        provider: "qdrant".to_string(),
-        host: DEFAULT_QDRANT_HOST.to_string(),
-        collection: DEFAULT_COLLECTION.to_string(),
-        embedding_dim: 768,
-        distance: "Cosine".to_string(),
-    });
+pub(crate) fn resolved_vector_db_config() -> Result<VectorDbConfig> {
+    // Only fall back to built-in defaults when no vector_db config exists at all.
+    // If one exists but fails to load (unreadable, malformed, a dangling symlink),
+    // that must be surfaced rather than silently swallowed into localhost defaults -
+    // otherwise a migrated deployment could write to the wrong Qdrant instance.
+    let mut vector_db = if crate::rag::vector_db_config_present()? {
+        load_vector_db_config()?
+    } else {
+        VectorDbConfig {
+            provider: "qdrant".to_string(),
+            host: DEFAULT_QDRANT_HOST.to_string(),
+            collection: DEFAULT_COLLECTION.to_string(),
+            embedding_dim: 768,
+            distance: "Cosine".to_string(),
+        }
+    };
 
     vector_db.collection = env_string("RAG_COLLECTION")
         .or_else(|| env_string("COLLECTION_NAME"))
         .unwrap_or_else(|| vector_db.collection.clone());
 
-    vector_db
+    Ok(vector_db)
 }
 
 pub(crate) fn resolve_ollama_endpoint() -> String {
@@ -1093,8 +1134,16 @@ fn default_manifest_path() -> PathBuf {
         // persist, leaving the on-disk manifest permanently stale.
         for candidate in [SYSTEM_MANIFEST_PATH, SYSTEM_MANIFEST_PATH_LEGACY] {
             let system_path = PathBuf::from(candidate);
-            if !system_path.exists() {
-                continue;
+            // symlink_metadata(), not exists(): exists() follows symlinks, so a dangling
+            // symlink at this location would report "nothing here" and fall through to
+            // the writable-directory loop below, which would then treat the same broken
+            // symlink path as a fresh location to create. symlink_metadata() sees the
+            // link itself, so a dangling symlink is still handled (and its read failure
+            // surfaces) here rather than silently reused.
+            match system_path.symlink_metadata() {
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(_) => return system_path,
+                Ok(_) => {}
             }
             if is_writable_file(&system_path) {
                 return system_path;
@@ -1129,6 +1178,9 @@ fn default_manifest_path() -> PathBuf {
 /// Returns `None` if no destination accepted the write.
 fn migrate_manifest(source: &Path) -> Option<PathBuf> {
     let raw = std::fs::read_to_string(source).ok()?;
+    // Validate before touching any destination: a malformed source must never be
+    // allowed to clobber a destination that may already hold a good manifest.
+    serde_json::from_str::<IndexManifest>(&raw).ok()?;
 
     let mut candidates: Vec<PathBuf> = Vec::new();
     #[cfg(unix)]
@@ -1146,6 +1198,12 @@ fn migrate_manifest(source: &Path) -> Option<PathBuf> {
     );
 
     candidates.into_iter().find(|destination| {
+        // Never overwrite an existing destination: it may already hold valid tracking
+        // data (e.g. from a prior partial migration), and clobbering it non-atomically
+        // could destroy usable state. Move on to the next candidate instead.
+        if destination.exists() {
+            return false;
+        }
         if let Some(parent) = destination.parent() {
             if std::fs::create_dir_all(parent).is_err() {
                 return false;

@@ -77,6 +77,23 @@ pub fn load_vector_db_config() -> Result<VectorDbConfig> {
     serde_json::from_str(&raw).with_context(|| format!("failed to parse {}", path.display()))
 }
 
+/// Whether a vector_db config exists at the resolved system location, without reading
+/// or parsing it. Callers that treat "no config" as fine (falling back to built-in
+/// defaults) use this to distinguish that from "config present but unreadable,
+/// malformed, or a dangling symlink" - which must be surfaced, not silently swallowed
+/// into the same default.
+pub fn vector_db_config_present() -> Result<bool> {
+    let path = crate::config::resolve_system_config_path(
+        VECTOR_DB_CONFIG_PATH,
+        VECTOR_DB_CONFIG_PATH_LEGACY,
+    )?;
+    match path.symlink_metadata() {
+        Ok(_) => Ok(true),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(err).with_context(|| format!("failed to check {}", path.display())),
+    }
+}
+
 pub fn load_repo_index_config() -> Result<RepoIndexConfig> {
     let path = crate::config::resolve_system_config_path(
         REPO_INDEX_CONFIG_PATH,

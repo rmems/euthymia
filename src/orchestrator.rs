@@ -659,19 +659,22 @@ impl Orchestrator {
     /// permanently unable to track state that Qdrant now reflects.
     fn ensure_manifest_writable(&self) -> Result<()> {
         if self.manifest_path.exists() {
-            if !is_writable_file(&self.manifest_path) {
-                bail!(
-                    "manifest at {} is not writable; move it to a writable NeuralForge-Memory config location before indexing",
-                    self.manifest_path.display()
-                );
+            if is_writable_file(&self.manifest_path) {
+                return Ok(());
             }
-        } else if let Some(parent) = self.manifest_path.parent() {
-            if parent.is_dir() && !is_writable_dir(parent) {
-                bail!(
-                    "manifest directory {} is not writable; move it to a writable NeuralForge-Memory config location before indexing",
-                    parent.display()
-                );
-            }
+            bail!(
+                "manifest at {} is not writable; move it to a writable NeuralForge-Memory config location before indexing",
+                self.manifest_path.display()
+            );
+        }
+        if let Some(parent) = self.manifest_path.parent()
+            && parent.is_dir()
+            && !is_writable_dir(parent)
+        {
+            bail!(
+                "manifest directory {} is not writable; move it to a writable NeuralForge-Memory config location before indexing",
+                parent.display()
+            );
         }
         Ok(())
     }
@@ -1215,10 +1218,10 @@ fn migrate_manifest(source: &Path) -> Option<PathBuf> {
         if destination.exists() {
             return false;
         }
-        if let Some(parent) = destination.parent() {
-            if std::fs::create_dir_all(parent).is_err() {
-                return false;
-            }
+        if let Some(parent) = destination.parent()
+            && std::fs::create_dir_all(parent).is_err()
+        {
+            return false;
         }
         std::fs::write(destination, &raw).is_ok()
     })

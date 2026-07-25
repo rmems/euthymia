@@ -194,22 +194,23 @@ pub fn uninstall(
         match target {
             ClientTarget::Codex => {
                 if dry_run {
-                    changes.push(format!("codex mcp remove {SERVER_KEY}"));
+                    changes.push(format!("codex mcp remove {SERVER_KEY} (if present)"));
                     changes.push(format!("codex mcp remove {SERVER_KEY_LEGACY} (if present)"));
                 } else {
-                    let status = Command::new("codex")
-                        .args(["mcp", "remove", SERVER_KEY])
-                        .status()
-                        .context("failed to run codex mcp remove")?;
-                    if !status.success() {
-                        bail!("codex mcp remove failed with status {status}");
+                    // Best-effort for both names: an upgraded install may have only the
+                    // legacy entry, a fresh one may have only the new entry, and a
+                    // partially-migrated one could have neither or both. A nonzero exit
+                    // just means that particular entry wasn't registered - not a real
+                    // failure to surface, and not a reason to skip trying the other name.
+                    for key in [SERVER_KEY, SERVER_KEY_LEGACY] {
+                        let status = Command::new("codex")
+                            .args(["mcp", "remove", key])
+                            .status()
+                            .context("failed to run codex mcp remove")?;
+                        if status.success() {
+                            changes.push(format!("removed Codex config for {key}"));
+                        }
                     }
-                    changes.push(format!("removed Codex config for {SERVER_KEY}"));
-                    // Best-effort only: a fresh install never had the legacy entry, so a
-                    // nonzero exit here is expected and not a real failure to surface.
-                    let _ = Command::new("codex")
-                        .args(["mcp", "remove", SERVER_KEY_LEGACY])
-                        .status();
                 }
             }
             ClientTarget::Cursor => {

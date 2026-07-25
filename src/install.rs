@@ -580,9 +580,10 @@ pub async fn doctor_checks() -> Vec<(String, String)> {
     // Check index manifest (same resolution as runtime orchestrator, following a
     // recorded migration so this reports the manifest actually in use, not a
     // frozen read-only source it was migrated away from)
-    match crate::orchestrator::rag_index_manifest_path() {
-        Ok(logical_path) => {
-            let manifest_path = crate::orchestrator::effective_manifest_path_for(&logical_path);
+    match crate::orchestrator::rag_index_manifest_path()
+        .and_then(|logical_path| crate::orchestrator::effective_manifest_path_for(&logical_path))
+    {
+        Ok(manifest_path) => {
             if manifest_path.exists() {
                 if let Ok(raw) = std::fs::read_to_string(&manifest_path) {
                     match crate::orchestrator::manifest_chunk_count(&raw) {

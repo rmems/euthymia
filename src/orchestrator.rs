@@ -653,7 +653,7 @@ impl Orchestrator {
         })
     }
 
-    fn effective_manifest_path(&self) -> PathBuf {
+    fn effective_manifest_path(&self) -> Result<PathBuf> {
         effective_manifest_path_for(&self.manifest_path)
     }
 
@@ -663,7 +663,7 @@ impl Orchestrator {
     /// save_manifest() time, after vectors have already been mutated, leaving the
     /// manifest permanently unable to track state that Qdrant now reflects.
     fn ensure_manifest_writable(&self) -> Result<PathBuf> {
-        let effective = self.effective_manifest_path();
+        let effective = self.effective_manifest_path()?;
         if effective.exists() {
             return self.ensure_existing_manifest_writable(&effective);
         }
@@ -689,7 +689,7 @@ impl Orchestrator {
     }
 
     async fn load_manifest(&self) -> Result<IndexManifest> {
-        let path = self.effective_manifest_path();
+        let path = self.effective_manifest_path()?;
         if tokio::fs::metadata(&path).await.is_err() {
             return Ok(IndexManifest::default());
         }
@@ -1231,15 +1231,38 @@ fn default_local_manifest_path() -> PathBuf {
 /// migration destination if one was already established, otherwise `logical_path`
 /// itself. Pure read - performs no migration, so it's safe to call from read-only
 /// contexts (health checks, doctor) without side effects.
-pub(crate) fn effective_manifest_path_for(logical_path: &Path) -> PathBuf {
+///
+/// A marker that names a destination which no longer exists is an error, not a
+/// reason to fall back to the frozen logical source: that destination is where
+/// tracking state has lived (and kept accumulating via saves) since the
+/// migration, so silently reverting to the stale source and letting indexing
+/// recreate a fresh copy from it would orphan every chunk recorded only in the
+/// now-missing destination.
+pub(crate) fn effective_manifest_path_for(logical_path: &Path) -> Result<PathBuf> {
     let marker = migration_marker_path(logical_path);
-    if let Ok(recorded) = std::fs::read_to_string(&marker) {
-        let recorded = PathBuf::from(recorded.trim());
-        if !recorded.as_os_str().is_empty() && recorded.exists() {
-            return recorded;
+    match std::fs::read_to_string(&marker) {
+        Ok(recorded) => {
+            let recorded = PathBuf::from(recorded.trim());
+            if recorded.as_os_str().is_empty() {
+                bail!("manifest migration marker {} is empty", marker.display());
+            }
+            if !recorded.exists() {
+                bail!(
+                    "manifest migration marker {} points to {}, which no longer exists (it may have been deleted after the manifest was migrated there)",
+                    marker.display(),
+                    recorded.display()
+                );
+            }
+            Ok(recorded)
         }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(logical_path.to_path_buf()),
+        Err(err) => Err(err).with_context(|| {
+            format!(
+                "failed to read manifest migration marker {}",
+                marker.display()
+            )
+        }),
     }
-    logical_path.to_path_buf()
 }
 
 /// Path of the marker file recording where `logical_path` was migrated to, so the

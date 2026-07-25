@@ -1154,6 +1154,10 @@ fn default_manifest_path() -> PathBuf {
             }
         }
     }
+    default_local_manifest_path()
+}
+
+fn default_local_manifest_path() -> PathBuf {
     dirs::data_local_dir()
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
         .join("agentos")
@@ -1206,29 +1210,30 @@ fn migrate_manifest(source: &Path) -> Option<PathBuf> {
             candidates.push(path);
         }
     }
-    candidates.push(
-        dirs::data_local_dir()
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
-            .join("agentos")
-            .join("rag_index_manifest.json"),
-    );
+    candidates.push(default_local_manifest_path());
 
-    candidates.into_iter().find(|destination| {
-        if destination.exists() {
-            // A prior run may have already migrated into this destination - reuse it
-            // rather than re-running the migration every startup. Only treat it as
-            // usable if it's actually a valid manifest; a corrupt or foreign file at
-            // this path is skipped (not overwritten) rather than risking data loss by
-            // clobbering unknown state.
-            return is_valid_manifest_file(destination);
-        }
-        if let Some(parent) = destination.parent()
-            && std::fs::create_dir_all(parent).is_err()
-        {
-            return false;
-        }
-        std::fs::write(destination, &raw).is_ok()
-    })
+    candidates
+        .into_iter()
+        .find(|destination| migrate_to_candidate(destination, &raw))
+}
+
+/// Write `raw` to `destination` if that's safe. Returns whether `destination` is now
+/// (or already was) a usable manifest location.
+fn migrate_to_candidate(destination: &Path, raw: &str) -> bool {
+    if destination.exists() {
+        // A prior run may have already migrated into this destination - reuse it
+        // rather than re-running the migration every startup. Only treat it as
+        // usable if it's actually a valid manifest; a corrupt or foreign file at
+        // this path is skipped (not overwritten) rather than risking data loss by
+        // clobbering unknown state.
+        return is_valid_manifest_file(destination);
+    }
+    if let Some(parent) = destination.parent()
+        && std::fs::create_dir_all(parent).is_err()
+    {
+        return false;
+    }
+    std::fs::write(destination, raw).is_ok()
 }
 
 fn is_valid_manifest_file(path: &Path) -> bool {

@@ -213,7 +213,7 @@ export AGENTOS_RAG_JWT=<optional-bearer-token>
 
 # Observability (CLI-only, no embedded SDKs)
 export SENTRY_ORG="<sentry-org>"
-export SENTRY_PROJECT_AGENTOS_CORE="<sentry-project>"
+export SENTRY_PROJECT_NEURALFORGE_MEMORY="<sentry-project>"  # legacy: SENTRY_PROJECT_AGENTOS_CORE
 export NEW_RELIC_ACCOUNT_ID="<account-id>"
 ```
 

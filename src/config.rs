@@ -16,10 +16,17 @@ pub struct ServerConfig {
 impl ServerConfig {
     pub fn resolved_default_repo_root(&self) -> PathBuf {
         // Updated by Grok Build 0.1 for GitHub issue #7: prefer NEURALFORGE_MEMORY_CANON_ROOT, fallback to legacy AGENTOS_CORE_CANON_ROOT for compat
+        // An explicitly-set-but-empty override is treated as unset, not as the current directory.
         env::var("NEURALFORGE_MEMORY_CANON_ROOT")
-            .or_else(|_| env::var("AGENTOS_CORE_CANON_ROOT"))
+            .ok()
+            .filter(|v| !v.is_empty())
+            .or_else(|| {
+                env::var("AGENTOS_CORE_CANON_ROOT")
+                    .ok()
+                    .filter(|v| !v.is_empty())
+            })
             .map(PathBuf::from)
-            .unwrap_or_else(|_| self.default_repo_root.clone())
+            .unwrap_or_else(|| self.default_repo_root.clone())
     }
 
     pub fn policy_markdown(&self) -> String {

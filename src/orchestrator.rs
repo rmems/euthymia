@@ -1085,12 +1085,26 @@ fn default_manifest_path() -> PathBuf {
     {
         // Prefer wherever a manifest already exists so a partial migration (new config
         // dir created, but the manifest hasn't moved yet) doesn't start indexing from an
-        // empty map and orphan vectors tracked only in the legacy manifest.
+        // empty map and orphan vectors tracked only in the legacy manifest. If that
+        // existing manifest isn't writable (e.g. the service can read but not write the
+        // legacy /etc/agentos location), migrate its contents to a writable destination
+        // up front rather than returning the read-only path: otherwise vector mutations
+        // would happen against Qdrant before save_manifest() ever discovers it can't
+        // persist, leaving the on-disk manifest permanently stale.
         for candidate in [SYSTEM_MANIFEST_PATH, SYSTEM_MANIFEST_PATH_LEGACY] {
             let system_path = PathBuf::from(candidate);
-            if system_path.exists() {
+            if !system_path.exists() {
+                continue;
+            }
+            if is_writable_file(&system_path) {
                 return system_path;
             }
+            if let Some(destination) = migrate_manifest(&system_path) {
+                return destination;
+            }
+            // No writable destination found; fall back to the read-only path so a save
+            // failure surfaces loudly instead of indexing against nothing.
+            return system_path;
         }
         for candidate in [SYSTEM_MANIFEST_PATH, SYSTEM_MANIFEST_PATH_LEGACY] {
             let system_path = PathBuf::from(candidate);
@@ -1107,6 +1121,42 @@ fn default_manifest_path() -> PathBuf {
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
         .join("agentos")
         .join("rag_index_manifest.json")
+}
+
+/// Copy an existing-but-not-writable manifest's contents to the first writable
+/// destination (preferring the NeuralForge-Memory system location, then the legacy
+/// one, then the user-local data dir), so persistence works from the very first save.
+/// Returns `None` if no destination accepted the write.
+fn migrate_manifest(source: &Path) -> Option<PathBuf> {
+    let raw = std::fs::read_to_string(source).ok()?;
+
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    #[cfg(unix)]
+    for candidate in [SYSTEM_MANIFEST_PATH, SYSTEM_MANIFEST_PATH_LEGACY] {
+        let path = PathBuf::from(candidate);
+        if path != source {
+            candidates.push(path);
+        }
+    }
+    candidates.push(
+        dirs::data_local_dir()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+            .join("agentos")
+            .join("rag_index_manifest.json"),
+    );
+
+    candidates.into_iter().find(|destination| {
+        if let Some(parent) = destination.parent() {
+            if std::fs::create_dir_all(parent).is_err() {
+                return false;
+            }
+        }
+        std::fs::write(destination, &raw).is_ok()
+    })
+}
+
+fn is_writable_file(path: &Path) -> bool {
+    std::fs::OpenOptions::new().write(true).open(path).is_ok()
 }
 
 fn is_writable_dir(path: &Path) -> bool {

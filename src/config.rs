@@ -86,14 +86,19 @@ pub fn discover_repo_home() -> Result<PathBuf> {
 /// Resolve a system config file path: prefer the NeuralForge-Memory location if it
 /// exists, falling back to the legacy AgentOS location for the #7 transition.
 ///
-/// Uses `try_exists()` rather than `exists()` so a metadata error other than "not
-/// found" (e.g. permission denied on the parent directory, a dangling symlink) is
-/// reported instead of being silently treated as "use the legacy path".
+/// Uses `symlink_metadata()` rather than `exists()`/`try_exists()`: both of those
+/// follow symlinks, so a dangling symlink at the preferred location resolves to
+/// "doesn't exist" and would silently fall back to the legacy path, masking a
+/// broken deployment. `symlink_metadata()` reports on the symlink itself, so a
+/// dangling link still counts as "something is here" and surfaces later as a read
+/// error instead of silently loading stale legacy config. Any other metadata error
+/// (e.g. permission denied on a parent directory) is propagated rather than
+/// swallowed.
 pub fn resolve_system_config_path(neuralforge_path: &str, legacy_path: &str) -> Result<PathBuf> {
     let neuralforge = Path::new(neuralforge_path);
-    match neuralforge.try_exists() {
-        Ok(true) => Ok(neuralforge.to_path_buf()),
-        Ok(false) => Ok(PathBuf::from(legacy_path)),
+    match neuralforge.symlink_metadata() {
+        Ok(_) => Ok(neuralforge.to_path_buf()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(PathBuf::from(legacy_path)),
         Err(err) => Err(err).with_context(|| format!("failed to check {}", neuralforge.display())),
     }
 }

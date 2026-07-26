@@ -8,7 +8,8 @@ use clap::ValueEnum;
 use dirs::home_dir;
 use serde_json::{Map, Value, json};
 
-const SERVER_KEY: &str = "agentos-core";
+const SERVER_KEY: &str = "neuralforge-memory";
+const SERVER_KEY_LEGACY: &str = "agentos-core";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 pub enum ClientTarget {
@@ -66,6 +67,9 @@ pub fn install(
                 let args = ctx.codex_add_args();
                 if dry_run {
                     changes.push(format!("codex {}", args.join(" ")));
+                    changes.push(format!(
+                        "codex mcp remove {SERVER_KEY_LEGACY} (migrate, if present)"
+                    ));
                 } else {
                     let status = Command::new("codex")
                         .args(&args)
@@ -75,46 +79,107 @@ pub fn install(
                         bail!("codex mcp add failed with status {status}");
                     }
                     changes.push("updated Codex via codex mcp add".to_string());
+                    // Best-effort: drop the pre-rename entry so `codex mcp list` doesn't
+                    // carry both identities. A nonzero exit usually just means it wasn't
+                    // there, but surface it (with stderr, if any) instead of silently
+                    // discarding every outcome, so a real failure to remove the legacy
+                    // entry isn't masked as a clean, fully-migrated install.
+                    let output = Command::new("codex")
+                        .args(["mcp", "remove", SERVER_KEY_LEGACY])
+                        .output()
+                        .context("failed to run codex mcp remove")?;
+                    if output.status.success() {
+                        changes.push(format!(
+                            "removed legacy Codex config for {SERVER_KEY_LEGACY}"
+                        ));
+                    } else {
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        let stderr = stderr.trim();
+                        changes.push(format!(
+                            "codex mcp remove {SERVER_KEY_LEGACY} exited with {}{}{}",
+                            output.status,
+                            if stderr.is_empty() { "" } else { ": " },
+                            stderr
+                        ));
+                    }
                 }
             }
             ClientTarget::Cursor => {
                 let path = home_path(".cursor/mcp.json")?;
                 let entry = stdio_entry_json(&ctx.launcher_path());
-                upsert_json_server(&path, "mcpServers", SERVER_KEY, entry, dry_run)?;
+                upsert_json_server_migrating(
+                    &path,
+                    "mcpServers",
+                    SERVER_KEY,
+                    SERVER_KEY_LEGACY,
+                    entry,
+                    dry_run,
+                )?;
                 changes.push(path.display().to_string());
             }
             ClientTarget::Vscode => {
                 let path = home_path(".config/Code/User/mcp.json")?;
                 let entry = vscode_stdio_entry_json(&ctx.launcher_path());
-                upsert_json_server(&path, "servers", SERVER_KEY, entry, dry_run)?;
+                upsert_json_server_migrating(
+                    &path,
+                    "servers",
+                    SERVER_KEY,
+                    SERVER_KEY_LEGACY,
+                    entry,
+                    dry_run,
+                )?;
                 changes.push(path.display().to_string());
             }
             ClientTarget::Windsurf => {
                 let path = home_path(".codeium/windsurf/mcp_config.json")?;
                 let entry = stdio_entry_json(&ctx.launcher_path());
-                upsert_json_server(&path, "mcpServers", SERVER_KEY, entry, dry_run)?;
+                upsert_json_server_migrating(
+                    &path,
+                    "mcpServers",
+                    SERVER_KEY,
+                    SERVER_KEY_LEGACY,
+                    entry,
+                    dry_run,
+                )?;
                 changes.push(path.display().to_string());
             }
             ClientTarget::Trae => {
                 let path = home_path(".config/Trae/User/mcp.json")?;
                 let entry = stdio_entry_json(&ctx.launcher_path());
-                upsert_json_server(&path, "mcpServers", SERVER_KEY, entry, dry_run)?;
+                upsert_json_server_migrating(
+                    &path,
+                    "mcpServers",
+                    SERVER_KEY,
+                    SERVER_KEY_LEGACY,
+                    entry,
+                    dry_run,
+                )?;
                 changes.push(path.display().to_string());
             }
             ClientTarget::Antigravity => {
                 let path = home_path(".antigravity/settings.json")?;
                 let entry = stdio_entry_json(&ctx.launcher_path());
-                upsert_json_server(&path, "mcpServers", SERVER_KEY, entry, dry_run)?;
+                upsert_json_server_migrating(
+                    &path,
+                    "mcpServers",
+                    SERVER_KEY,
+                    SERVER_KEY_LEGACY,
+                    entry,
+                    dry_run,
+                )?;
                 changes.push(path.display().to_string());
             }
             ClientTarget::Jetbrains => {
                 let junie_path = home_path(".junie/mcp/mcp.json")?;
-                let snippet_path = home_path(".jetbrains/agentos-core.mcp.json")?;
+                let snippet_path = home_path(&format!(".jetbrains/{SERVER_KEY}.mcp.json"))?;
+                let legacy_snippet_path =
+                    home_path(&format!(".jetbrains/{SERVER_KEY_LEGACY}.mcp.json"))?;
                 let entry = stdio_entry_json(&ctx.launcher_path());
-                upsert_json_server(
+                upsert_json_server_migrating(
                     &junie_path,
                     "mcpServers",
                     SERVER_KEY,
+                    SERVER_KEY_LEGACY,
                     entry.clone(),
                     dry_run,
                 )?;
@@ -123,6 +188,11 @@ pub fn install(
                     json!({ "mcpServers": { SERVER_KEY: entry } }),
                     dry_run,
                 )?;
+                if !dry_run && legacy_snippet_path.exists() {
+                    std::fs::remove_file(&legacy_snippet_path).with_context(|| {
+                        format!("failed to remove {}", legacy_snippet_path.display())
+                    })?;
+                }
                 changes.push(junie_path.display().to_string());
                 changes.push(snippet_path.display().to_string());
             }
@@ -141,52 +211,85 @@ pub fn uninstall(
     for target in selected {
         match target {
             ClientTarget::Codex => {
-                let args = ["mcp", "remove", SERVER_KEY];
                 if dry_run {
-                    changes.push(format!("codex {}", args.join(" ")));
+                    changes.push(format!("codex mcp remove {SERVER_KEY} (if present)"));
+                    changes.push(format!("codex mcp remove {SERVER_KEY_LEGACY} (if present)"));
                 } else {
-                    let status = Command::new("codex")
-                        .args(args)
-                        .status()
-                        .context("failed to run codex mcp remove")?;
-                    if !status.success() {
-                        bail!("codex mcp remove failed with status {status}");
+                    // Best-effort for both names: an upgraded install may have only the
+                    // legacy entry, a fresh one may have only the new entry, and a
+                    // partially-migrated one could have neither or both, so a nonzero
+                    // exit isn't automatically a real failure - it's not a reason to
+                    // skip trying the other name either. But it also isn't automatically
+                    // fine: it could be a genuine problem (unreadable/unwritable Codex
+                    // config). Rather than guessing which from the exit code alone,
+                    // surface every nonzero exit as a change-log entry (with stderr, if
+                    // any) instead of silently dropping it, so uninstall can't quietly
+                    // report success while a registration is still actually there.
+                    for key in [SERVER_KEY, SERVER_KEY_LEGACY] {
+                        let output = Command::new("codex")
+                            .args(["mcp", "remove", key])
+                            .output()
+                            .context("failed to run codex mcp remove")?;
+                        if output.status.success() {
+                            changes.push(format!("removed Codex config for {key}"));
+                        } else {
+                            let stderr = String::from_utf8_lossy(&output.stderr);
+                            let stderr = stderr.trim();
+                            changes.push(format!(
+                                "codex mcp remove {key} exited with {}{}{}",
+                                output.status,
+                                if stderr.is_empty() { "" } else { ": " },
+                                stderr
+                            ));
+                        }
                     }
-                    changes.push("removed Codex config".to_string());
                 }
             }
             ClientTarget::Cursor => {
                 let path = home_path(".cursor/mcp.json")?;
                 remove_json_server(&path, "mcpServers", SERVER_KEY, dry_run)?;
+                remove_json_server(&path, "mcpServers", SERVER_KEY_LEGACY, dry_run)?;
                 changes.push(path.display().to_string());
             }
             ClientTarget::Vscode => {
                 let path = home_path(".config/Code/User/mcp.json")?;
                 remove_json_server(&path, "servers", SERVER_KEY, dry_run)?;
+                remove_json_server(&path, "servers", SERVER_KEY_LEGACY, dry_run)?;
                 changes.push(path.display().to_string());
             }
             ClientTarget::Windsurf => {
                 let path = home_path(".codeium/windsurf/mcp_config.json")?;
                 remove_json_server(&path, "mcpServers", SERVER_KEY, dry_run)?;
+                remove_json_server(&path, "mcpServers", SERVER_KEY_LEGACY, dry_run)?;
                 changes.push(path.display().to_string());
             }
             ClientTarget::Trae => {
                 let path = home_path(".config/Trae/User/mcp.json")?;
                 remove_json_server(&path, "mcpServers", SERVER_KEY, dry_run)?;
+                remove_json_server(&path, "mcpServers", SERVER_KEY_LEGACY, dry_run)?;
                 changes.push(path.display().to_string());
             }
             ClientTarget::Antigravity => {
                 let path = home_path(".antigravity/settings.json")?;
                 remove_json_server(&path, "mcpServers", SERVER_KEY, dry_run)?;
+                remove_json_server(&path, "mcpServers", SERVER_KEY_LEGACY, dry_run)?;
                 changes.push(path.display().to_string());
             }
             ClientTarget::Jetbrains => {
                 let junie_path = home_path(".junie/mcp/mcp.json")?;
-                let snippet_path = home_path(".jetbrains/agentos-core.mcp.json")?;
+                let snippet_path = home_path(&format!(".jetbrains/{SERVER_KEY}.mcp.json"))?;
+                let legacy_snippet_path =
+                    home_path(&format!(".jetbrains/{SERVER_KEY_LEGACY}.mcp.json"))?;
                 remove_json_server(&junie_path, "mcpServers", SERVER_KEY, dry_run)?;
+                remove_json_server(&junie_path, "mcpServers", SERVER_KEY_LEGACY, dry_run)?;
                 if !dry_run && snippet_path.exists() {
                     std::fs::remove_file(&snippet_path)
                         .with_context(|| format!("failed to remove {}", snippet_path.display()))?;
+                }
+                if !dry_run && legacy_snippet_path.exists() {
+                    std::fs::remove_file(&legacy_snippet_path).with_context(|| {
+                        format!("failed to remove {}", legacy_snippet_path.display())
+                    })?;
                 }
                 changes.push(junie_path.display().to_string());
                 changes.push(snippet_path.display().to_string());
@@ -241,7 +344,7 @@ pub async fn doctor(ctx: &InstallContext) -> Result<String> {
         ("jetbrains-junie", home_path(".junie/mcp/mcp.json")?),
         (
             "jetbrains-snippet",
-            home_path(".jetbrains/agentos-core.mcp.json")?,
+            home_path(&format!(".jetbrains/{SERVER_KEY}.mcp.json"))?,
         ),
     ];
 
@@ -290,10 +393,13 @@ fn vscode_stdio_entry_json(launcher: &Path) -> Value {
     })
 }
 
-fn upsert_json_server(
+/// Insert `server_name` under `root_key`, dropping any `legacy_name` entry from the
+/// same object in the same pass (migrates a pre-rename install in place).
+fn upsert_json_server_migrating(
     path: &Path,
     root_key: &str,
     server_name: &str,
+    legacy_name: &str,
     server_value: Value,
     dry_run: bool,
 ) -> Result<()> {
@@ -302,6 +408,7 @@ fn upsert_json_server(
         .remove(root_key)
         .and_then(|value| value.as_object().cloned())
         .unwrap_or_default();
+    servers.remove(legacy_name);
     servers.insert(server_name.to_string(), server_value);
     root.insert(root_key.to_string(), Value::Object(servers));
     write_json_value(path, Value::Object(root), dry_run)
@@ -370,9 +477,11 @@ async fn codex_has_server_status() -> String {
         return format!("error: exit {}", output.status);
     }
 
-    let configured = String::from_utf8_lossy(&output.stdout).contains(SERVER_KEY);
-    if configured {
+    let output_text = String::from_utf8_lossy(&output.stdout);
+    if output_text.contains(SERVER_KEY) {
         "configured".to_string()
+    } else if output_text.contains(SERVER_KEY_LEGACY) {
+        "configured (legacy agentos-core; re-run install to migrate)".to_string()
     } else {
         "not configured".to_string()
     }
@@ -409,9 +518,17 @@ pub async fn doctor_checks() -> Vec<(String, String)> {
     };
 
     // Check Qdrant
-    let vector_db = crate::orchestrator::resolved_vector_db_config();
-    let qdrant_host = vector_db.host.trim_end_matches('/').to_string();
-    checks.push(http_health(&client, "qdrant", &format!("{}/readyz", qdrant_host)).await);
+    let vector_db = match crate::orchestrator::resolved_vector_db_config() {
+        Ok(vector_db) => {
+            let qdrant_host = vector_db.host.trim_end_matches('/').to_string();
+            checks.push(http_health(&client, "qdrant", &format!("{}/readyz", qdrant_host)).await);
+            Some(vector_db)
+        }
+        Err(err) => {
+            checks.push(("vector_db_config".to_string(), format!("error: {err}")));
+            None
+        }
+    };
 
     let ollama_endpoint = crate::orchestrator::resolve_ollama_endpoint();
     let ollama_health = if std::env::var("OLLAMA_ENDPOINT")
@@ -488,36 +605,52 @@ pub async fn doctor_checks() -> Vec<(String, String)> {
     }
 
     // Check RAG_COLLECTION
-    checks.push(("RAG_COLLECTION".to_string(), vector_db.collection));
+    checks.push((
+        "RAG_COLLECTION".to_string(),
+        vector_db
+            .map(|vector_db| vector_db.collection)
+            .unwrap_or_else(|| "unknown (see vector_db_config check)".to_string()),
+    ));
 
-    // Check index manifest (same resolution as runtime orchestrator)
-    let manifest_path = crate::orchestrator::rag_index_manifest_path();
-
-    let manifest_exists = manifest_path.exists();
-    if manifest_exists {
-        if let Ok(raw) = std::fs::read_to_string(&manifest_path) {
-            match crate::orchestrator::manifest_chunk_count(&raw) {
-                Ok(chunk_count) => {
+    // Check index manifest (same resolution as runtime orchestrator, following a
+    // recorded migration so this reports the manifest actually in use, not a
+    // frozen read-only source it was migrated away from)
+    match crate::orchestrator::rag_index_manifest_path()
+        .and_then(|logical_path| crate::orchestrator::effective_manifest_path_for(&logical_path))
+    {
+        Ok(manifest_path) => {
+            if manifest_path.exists() {
+                if let Ok(raw) = std::fs::read_to_string(&manifest_path) {
+                    match crate::orchestrator::manifest_chunk_count(&raw) {
+                        Ok(chunk_count) => {
+                            checks.push((
+                                "index_manifest".to_string(),
+                                format!("exists ({} chunks)", chunk_count),
+                            ));
+                        }
+                        Err(_) => {
+                            checks.push((
+                                "index_manifest".to_string(),
+                                "exists (invalid)".to_string(),
+                            ));
+                        }
+                    }
+                } else {
                     checks.push((
                         "index_manifest".to_string(),
-                        format!("exists ({} chunks)", chunk_count),
+                        "exists (unreadable)".to_string(),
                     ));
                 }
-                Err(_) => {
-                    checks.push(("index_manifest".to_string(), "exists (invalid)".to_string()));
-                }
+            } else {
+                checks.push((
+                    "index_manifest".to_string(),
+                    format!("not found ({})", manifest_path.display()),
+                ));
             }
-        } else {
-            checks.push((
-                "index_manifest".to_string(),
-                "exists (unreadable)".to_string(),
-            ));
         }
-    } else {
-        checks.push((
-            "index_manifest".to_string(),
-            format!("not found ({})", manifest_path.display()),
-        ));
+        Err(err) => {
+            checks.push(("index_manifest".to_string(), format!("error: {err}")));
+        }
     }
 
     checks

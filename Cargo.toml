@@ -1,8 +1,8 @@
 [package]
-name = "agentos-core"
+name = "neuralforge-memory"
 version = "0.1.0"
 edition = "2024"
-description = "Local MCP server for AgentOS context, RAG, and bounded repo analysis"
+description = "Local MCP server for NeuralForge-Memory (RAG/vector DB for agent memory, e.g. Hermes tutor/hypeman). Legacy AgentOS naming; see #7. Updated by Grok Build 0.1"
 license = "MIT"
 
 [dependencies]

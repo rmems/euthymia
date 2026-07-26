@@ -4,7 +4,25 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
 #[cfg(unix)]
-const SYSTEM_ROUTER_CONFIG_PATH: &str = "/etc/agentos/configs/model_router.json";
+const SYSTEM_ROUTER_CONFIG_PATH: &str = "/etc/neuralforge-memory/configs/model_router.json";
+#[cfg(unix)]
+const SYSTEM_ROUTER_CONFIG_PATH_LEGACY: &str = "/etc/agentos/configs/model_router.json";
+
+/// `Ok(None)` means the variable is genuinely unset (or set-but-empty). An
+/// explicitly-set-but-not-valid-Unicode value is a misconfiguration and must be
+/// reported, not silently treated as unset - that would mask a preferred override
+/// in favor of a lower-priority fallback (or the built-in default) instead of
+/// surfacing the broken deployment.
+fn env_non_empty(name: &str) -> Result<Option<String>> {
+    match env::var(name) {
+        Ok(value) => {
+            let trimmed = value.trim().to_string();
+            Ok((!trimmed.is_empty()).then_some(trimmed))
+        }
+        Err(env::VarError::NotPresent) => Ok(None),
+        Err(env::VarError::NotUnicode(_)) => bail!("{name} is set but is not valid unicode"),
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -105,6 +123,19 @@ pub enum ProviderRole {
 impl ProviderRole {
     pub fn to_env_key(&self) -> String {
         match self {
+            Self::DefaultCoding => "NEURALFORGE_ROLE_DEFAULT_CODING".to_string(),
+            Self::LongContext => "NEURALFORGE_ROLE_LONG_CONTEXT".to_string(),
+            Self::LocalPrivate => "NEURALFORGE_ROLE_LOCAL_PRIVATE".to_string(),
+            Self::RagEmbedding => "NEURALFORGE_ROLE_RAG_EMBEDDING".to_string(),
+            Self::RagEmbeddingCloud => "NEURALFORGE_ROLE_RAG_EMBEDDING_CLOUD".to_string(),
+            Self::CudaGpu => "NEURALFORGE_ROLE_CUDA_GPU".to_string(),
+            Self::Fallback => "NEURALFORGE_ROLE_FALLBACK".to_string(),
+        }
+    }
+
+    /// Legacy AgentOS-named env key, kept as a transition fallback (#7 / PR#8).
+    pub fn to_legacy_env_key(&self) -> String {
+        match self {
             Self::DefaultCoding => "AGENTOS_ROLE_DEFAULT_CODING".to_string(),
             Self::LongContext => "AGENTOS_ROLE_LONG_CONTEXT".to_string(),
             Self::LocalPrivate => "AGENTOS_ROLE_LOCAL_PRIVATE".to_string(),
@@ -178,11 +209,24 @@ impl ModelRouter {
     pub fn load_system_config_if_present() -> Result<Option<Self>> {
         #[cfg(unix)]
         {
-            let path = std::path::Path::new(SYSTEM_ROUTER_CONFIG_PATH);
-            if !path.exists() {
-                return Ok(None);
+            let path = crate::config::resolve_system_config_path(
+                SYSTEM_ROUTER_CONFIG_PATH,
+                SYSTEM_ROUTER_CONFIG_PATH_LEGACY,
+            )?;
+            // symlink_metadata(), not exists(): exists() follows symlinks, so a dangling
+            // symlink at the resolved path would report "nothing here" and silently fall
+            // back to built-in routing - the exact masking resolve_system_config_path was
+            // hardened to avoid. symlink_metadata() sees the link itself, so a dangling
+            // symlink is treated as "something is here" and its read failure below is
+            // surfaced instead of swallowed.
+            match path.symlink_metadata() {
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(err) => {
+                    return Err(err).with_context(|| format!("failed to check {}", path.display()));
+                }
+                Ok(_) => {}
             }
-            let raw = std::fs::read_to_string(path)
+            let raw = std::fs::read_to_string(&path)
                 .with_context(|| format!("failed to read {}", path.display()))?;
             let config: ModelRouterConfig = serde_json::from_str(&raw)
                 .with_context(|| format!("failed to parse {}", path.display()))?;
@@ -202,11 +246,12 @@ impl ModelRouter {
 
         for role in all_roles {
             let key = role.to_env_key();
-            let Some(provider_str) = env::var(&key)
-                .ok()
-                .map(|v| v.trim().to_string())
-                .filter(|v| !v.is_empty())
-            else {
+            let legacy_key = role.to_legacy_env_key();
+            let provider_str = match env_non_empty(&key)? {
+                Some(value) => Some(value),
+                None => env_non_empty(&legacy_key)?,
+            };
+            let Some(provider_str) = provider_str else {
                 continue;
             };
 
@@ -219,26 +264,21 @@ impl ModelRouter {
                 );
             };
 
-            if let Some(key_var) = provider.api_key_env_var() {
-                let has_key = env::var(key_var)
-                    .ok()
-                    .map(|v| v.trim().to_string())
-                    .filter(|v| !v.is_empty())
-                    .is_some();
-                if !has_key {
-                    bail!(
-                        "{} is required for {} provider in role {} but not set",
-                        key_var,
-                        provider.name(),
-                        role.name()
-                    );
-                }
+            if let Some(key_var) = provider.api_key_env_var()
+                && env_non_empty(key_var)?.is_none()
+            {
+                bail!(
+                    "{} is required for {} provider in role {} but not set",
+                    key_var,
+                    provider.name(),
+                    role.name()
+                );
             }
 
-            let model = env::var(format!("{key}_MODEL"))
-                .ok()
-                .map(|v| v.trim().to_string())
-                .filter(|v| !v.is_empty());
+            let model = match env_non_empty(&format!("{key}_MODEL"))? {
+                Some(value) => Some(value),
+                None => env_non_empty(&format!("{legacy_key}_MODEL"))?,
+            };
             roles.push(RoleProvider {
                 role,
                 provider,
@@ -270,10 +310,11 @@ mod tests {
 
     fn clear_role_env() {
         for role in ProviderRole::all() {
-            let key = role.to_env_key();
-            unsafe {
-                std::env::remove_var(&key);
-                std::env::remove_var(format!("{key}_MODEL"));
+            for key in [role.to_env_key(), role.to_legacy_env_key()] {
+                unsafe {
+                    std::env::remove_var(&key);
+                    std::env::remove_var(format!("{key}_MODEL"));
+                }
             }
         }
         for key in [
@@ -335,12 +376,34 @@ mod tests {
     fn provider_role_env_keys_are_correct() {
         assert_eq!(
             ProviderRole::DefaultCoding.to_env_key(),
-            "AGENTOS_ROLE_DEFAULT_CODING"
+            "NEURALFORGE_ROLE_DEFAULT_CODING"
         );
         assert_eq!(
             ProviderRole::RagEmbedding.to_env_key(),
+            "NEURALFORGE_ROLE_RAG_EMBEDDING"
+        );
+        assert_eq!(
+            ProviderRole::DefaultCoding.to_legacy_env_key(),
+            "AGENTOS_ROLE_DEFAULT_CODING"
+        );
+        assert_eq!(
+            ProviderRole::RagEmbedding.to_legacy_env_key(),
             "AGENTOS_ROLE_RAG_EMBEDDING"
         );
+    }
+
+    #[test]
+    fn env_parsing_new_role_key_takes_precedence_over_legacy() {
+        with_env_lock(|| {
+            clear_role_env();
+            unsafe {
+                std::env::set_var("NEURALFORGE_ROLE_DEFAULT_CODING", "codex");
+                std::env::set_var("AGENTOS_ROLE_DEFAULT_CODING", "opencode");
+            }
+            let router = ModelRouter::from_env().unwrap();
+            let rp = router.get_provider(ProviderRole::DefaultCoding).unwrap();
+            assert_eq!(rp.provider, ModelProvider::Codex);
+        });
     }
 
     #[test]

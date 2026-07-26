@@ -2,18 +2,22 @@
 /target/
 /Cargo.lock
 
-# AgentOS system configs (never commit)
+# NeuralForge-Memory (and legacy AgentOS) system configs (never commit)
+# Updated by Grok Build 0.1 for GitHub issue #7
+/etc/neuralforge-memory/
+/etc/neuralforge-memory/apis/
+/etc/neuralforge-memory/configs/
+/etc/neuralforge-memory/tools/
+/etc/neuralforge-memory/schemas/
+# legacy AgentOS paths kept in ignore during transition (see #7)
 /etc/agentos/
-/etc/agentos/apis/
-/etc/agentos/configs/
-/etc/agentos/tools/
-/etc/agentos/schemas/
 
 # Local configs (never commit)
 *.jsonc
 *.toml
 *.yaml
 *.yml
+!.github/workflows/*.yml
 /config/
 
 # API keys

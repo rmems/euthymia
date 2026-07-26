@@ -45,8 +45,10 @@ impl DiscoveryServer {
         }
     }
 
-    fn default_root(&self) -> PathBuf {
-        self.config.resolved_default_repo_root()
+    fn default_root(&self) -> Result<PathBuf, ErrorData> {
+        self.config
+            .resolved_default_repo_root()
+            .map_err(internal_error)
     }
 
     fn snapshot_for(
@@ -55,7 +57,10 @@ impl DiscoveryServer {
     ) -> Result<crate::repo::RepoSnapshot, ErrorData> {
         match session_id {
             Some(id) => self.sessions.snapshot(id).map_err(internal_error),
-            None => scan_repo(&self.default_root()).map_err(internal_error),
+            None => {
+                let root = self.default_root()?;
+                scan_repo(&root).map_err(internal_error)
+            }
         }
     }
 
@@ -66,8 +71,8 @@ impl DiscoveryServer {
         }
     }
 
-    fn policy_resource(&self) -> String {
-        self.config.policy_markdown()
+    fn policy_resource(&self) -> Result<String, ErrorData> {
+        self.config.policy_markdown().map_err(internal_error)
     }
 }
 
@@ -240,10 +245,10 @@ impl DiscoveryServer {
         &self,
         Parameters(request): Parameters<CreateSessionRequest>,
     ) -> Result<Json<SessionView>, ErrorData> {
-        let repo_root = request
-            .repo_root
-            .map(PathBuf::from)
-            .unwrap_or_else(|| self.default_root());
+        let repo_root = match request.repo_root {
+            Some(repo_root) => PathBuf::from(repo_root),
+            None => self.default_root()?,
+        };
         let pinned_terms = if request.pinned_terms.is_empty() {
             self.config.default_pinned_terms.clone()
         } else {
@@ -487,10 +492,10 @@ impl DiscoveryServer {
         &self,
         Parameters(request): Parameters<GetFileRequest>,
     ) -> Result<Json<GetFileResponse>, ErrorData> {
-        let repo_root = request
-            .repo_root
-            .map(PathBuf::from)
-            .unwrap_or_else(|| self.default_root());
+        let repo_root = match request.repo_root {
+            Some(repo_root) => PathBuf::from(repo_root),
+            None => self.default_root()?,
+        };
         let relative = PathBuf::from(&request.relative_path);
         if relative.is_absolute()
             || relative
@@ -588,9 +593,10 @@ impl ServerHandler for DiscoveryServer {
                 .build(),
         )
         .with_instructions(
-            "Authoritative local repo analysis server for AgentOS. Use explicit session \
-             handles for scoped work. Prefer repo canon over inference. Surface ambiguous terms \
-             instead of normalizing them. Do not assume authority from unnamed sibling repos.",
+            "Authoritative local repo analysis server for NeuralForge-Memory. Use explicit \
+             session handles for scoped work. Prefer repo canon over inference. Surface \
+             ambiguous terms instead of normalizing them. Do not assume authority from unnamed \
+             sibling repos.",
         )
     }
 
@@ -602,7 +608,7 @@ impl ServerHandler for DiscoveryServer {
     + rmcp::service::MaybeSendFuture
     + '_ {
         async move {
-            let snapshot = scan_repo(&self.default_root()).map_err(internal_error)?;
+            let snapshot = scan_repo(&self.default_root()?).map_err(internal_error)?;
             Ok(ListResourcesResult {
                 meta: None,
                 resources: vec![
@@ -681,10 +687,10 @@ impl ServerHandler for DiscoveryServer {
     + rmcp::service::MaybeSendFuture
     + '_ {
         async move {
-            let snapshot = scan_repo(&self.default_root()).map_err(internal_error)?;
+            let snapshot = scan_repo(&self.default_root()?).map_err(internal_error)?;
             let content = match request.uri.as_str() {
                 "canon://policy" => {
-                    ResourceContents::text(self.policy_resource(), "canon://policy")
+                    ResourceContents::text(self.policy_resource()?, "canon://policy")
                         .with_mime_type("text/markdown")
                 }
                 "canon://summary" => ResourceContents::text(

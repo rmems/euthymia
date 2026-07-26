@@ -9,9 +9,12 @@ use walkdir::WalkDir;
 use crate::tools::ollama::{OllamaConfig, ollama_embed};
 use crate::tools::qdrant::qdrant_upsert;
 
-const RAG_CONFIG_PATH: &str = "/etc/agentos/configs/rag.json";
-const VECTOR_DB_CONFIG_PATH: &str = "/etc/agentos/configs/vector_db.json";
-const REPO_INDEX_CONFIG_PATH: &str = "/etc/agentos/configs/repo_index.json";
+const RAG_CONFIG_PATH: &str = "/etc/neuralforge-memory/configs/rag.json";
+const RAG_CONFIG_PATH_LEGACY: &str = "/etc/agentos/configs/rag.json";
+const VECTOR_DB_CONFIG_PATH: &str = "/etc/neuralforge-memory/configs/vector_db.json";
+const VECTOR_DB_CONFIG_PATH_LEGACY: &str = "/etc/agentos/configs/vector_db.json";
+const REPO_INDEX_CONFIG_PATH: &str = "/etc/neuralforge-memory/configs/repo_index.json";
+const REPO_INDEX_CONFIG_PATH_LEGACY: &str = "/etc/agentos/configs/repo_index.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RagConfig {
@@ -58,21 +61,47 @@ pub struct IndexReposReport {
 }
 
 pub fn load_rag_config() -> Result<RagConfig> {
-    let raw = std::fs::read_to_string(RAG_CONFIG_PATH)
-        .with_context(|| format!("failed to read {RAG_CONFIG_PATH}"))?;
-    serde_json::from_str(&raw).with_context(|| format!("failed to parse {RAG_CONFIG_PATH}"))
+    let path = crate::config::resolve_system_config_path(RAG_CONFIG_PATH, RAG_CONFIG_PATH_LEGACY)?;
+    let raw = std::fs::read_to_string(&path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    serde_json::from_str(&raw).with_context(|| format!("failed to parse {}", path.display()))
 }
 
 pub fn load_vector_db_config() -> Result<VectorDbConfig> {
-    let raw = std::fs::read_to_string(VECTOR_DB_CONFIG_PATH)
-        .with_context(|| format!("failed to read {VECTOR_DB_CONFIG_PATH}"))?;
-    serde_json::from_str(&raw).with_context(|| format!("failed to parse {VECTOR_DB_CONFIG_PATH}"))
+    let path = crate::config::resolve_system_config_path(
+        VECTOR_DB_CONFIG_PATH,
+        VECTOR_DB_CONFIG_PATH_LEGACY,
+    )?;
+    let raw = std::fs::read_to_string(&path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    serde_json::from_str(&raw).with_context(|| format!("failed to parse {}", path.display()))
+}
+
+/// Whether a vector_db config exists at the resolved system location, without reading
+/// or parsing it. Callers that treat "no config" as fine (falling back to built-in
+/// defaults) use this to distinguish that from "config present but unreadable,
+/// malformed, or a dangling symlink" - which must be surfaced, not silently swallowed
+/// into the same default.
+pub fn vector_db_config_present() -> Result<bool> {
+    let path = crate::config::resolve_system_config_path(
+        VECTOR_DB_CONFIG_PATH,
+        VECTOR_DB_CONFIG_PATH_LEGACY,
+    )?;
+    match path.symlink_metadata() {
+        Ok(_) => Ok(true),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(err).with_context(|| format!("failed to check {}", path.display())),
+    }
 }
 
 pub fn load_repo_index_config() -> Result<RepoIndexConfig> {
-    let raw = std::fs::read_to_string(REPO_INDEX_CONFIG_PATH)
-        .with_context(|| format!("failed to read {REPO_INDEX_CONFIG_PATH}"))?;
-    serde_json::from_str(&raw).with_context(|| format!("failed to parse {REPO_INDEX_CONFIG_PATH}"))
+    let path = crate::config::resolve_system_config_path(
+        REPO_INDEX_CONFIG_PATH,
+        REPO_INDEX_CONFIG_PATH_LEGACY,
+    )?;
+    let raw = std::fs::read_to_string(&path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    serde_json::from_str(&raw).with_context(|| format!("failed to parse {}", path.display()))
 }
 
 pub fn ollama_config_from_rag(cfg: &RagConfig) -> OllamaConfig {

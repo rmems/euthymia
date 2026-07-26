@@ -1,11 +1,11 @@
 <h1 align="center">
   <br>
-  Wilo Agent
+  NeuralForge-Memory
   <br>
 </h1>
 
 <p align="center">
-  <b>Local AI automation agent &amp; MCP server for context, RAG, and bounded repo analysis</b>
+  <b>Personal RAG + vector DB + MCP for memory — powering the Hermes AI Tutor / Hypeman</b>
 </p>
 
 <p align="center">
@@ -18,15 +18,17 @@
 
 ---
 
-> **⚠️ Experimental — personal project.** Wilo Agent is an early-stage experiment built and maintained by a single developer. It is not production software and is not accepting contributions at this time. This repo serves as a public build log — GitHub issues, PRs, and commits track design decisions and progress in the open.
+> **⚠️ Experimental — personal project.** NeuralForge-Memory is an early-stage experiment built and maintained by a single developer. It is not production software and is not accepting contributions at this time. This repo serves as a public build log — GitHub issues, PRs, and commits track design decisions and progress in the open.
+>
+> <!-- Updated by Grok Build 0.1 for GitHub issue #7 -->
 
-**Wilo Agent** (`agentos-core`) is a local Rust-based [MCP](https://modelcontextprotocol.io/) server that exposes canonical repo context, local RAG pipelines, and bounded analysis to AI coding clients — all running on your own hardware.
+**NeuralForge-Memory** is the personal RAG + vector DB + MCP focused on memory. It powers the **Hermes** tool used as an **AI Tutor / Hypeman**. This repo (NeuralForge-Memory) is the dedicated memory/RAG/MCP component.
 
-Built for the **NVIDIA RTX 5080** and open-weight models, Wilo keeps your code, embeddings, and inference fully local and private.
+Built for the **NVIDIA RTX 5080** and open-weight models, it keeps your code, embeddings, and inference fully local and private. (Previously referenced as Wilo Agent / `agentos-core` — see #7 for the name change cleanup.)
 
 ## Development Workflow
 
-Wilo is developed with an AI-assisted, multi-agent workflow:
+NeuralForge-Memory is developed with an AI-assisted, multi-agent workflow:
 
 - **GitHub** — serves as the primary build log and progress tracker; issues, PRs, and commits document every design decision in the open
 - **[Codex](https://openai.com/index/openai-codex/)** — cloud agent handling heavy repo work: large refactors, cross-file changes, and deep code generation
@@ -53,7 +55,7 @@ Wilo is developed with an AI-assisted, multi-agent workflow:
 └────────────────────────┬────────────────────────────┘
                          │ stdio / MCP
 ┌────────────────────────▼────────────────────────────┐
-│               agentos-core  (Rust)                  │
+│            neuralforge-memory  (Rust)               │
 │                                                     │
 │  ┌──────────┐  ┌──────────┐  ┌───────────────────┐ │
 │  │ Sessions │  │ Repo     │  │ Model Router      │ │
@@ -74,7 +76,7 @@ Wilo is developed with an AI-assisted, multi-agent workflow:
 
 ## Model Backends
 
-Wilo Agent separates the **control plane** (agent runtime, MCP, orchestration) from the **model plane** (pluggable inference backends). Current evaluation targets:
+NeuralForge-Memory separates the **control plane** (agent runtime, MCP, orchestration) from the **model plane** (pluggable inference backends). Current evaluation targets:
 
 | Model | Params | Architecture | Format | Runtime | Est. VRAM |
 |-------|--------|-------------|--------|---------|-----------|
@@ -92,7 +94,7 @@ Three of the five evaluation targets — Mamba-Codestral, Jamba, and Falcon-H1R 
 - **Constant memory per token** — SSM state is fixed-size regardless of sequence length, reducing VRAM pressure during long agent workflows with tool calls
 - **Better long-context scaling** — hybrid models keep Transformer attention for tasks that benefit from global reasoning while offloading sequential processing to SSM layers
 
-This makes hybrid models a natural fit for Wilo's core workloads: repo audit (large file scans), RAG-assisted research (high chunk counts), and multi-step agent loops where context accumulates over many tool calls. The Jamba 3B in particular can serve as a fast triage model that pre-filters before routing heavier tasks to the 9B Nemotron.
+This makes hybrid models a natural fit for NeuralForge-Memory's core workloads: repo audit (large file scans), RAG-assisted research (high chunk counts), and multi-step agent loops where context accumulates over many tool calls. The Jamba 3B in particular can serve as a fast triage model that pre-filters before routing heavier tasks to the 9B Nemotron.
 
 Role-based routing dispatches requests across providers:
 
@@ -150,11 +152,6 @@ cargo run -- uninstall --clients codex,cursor
 
 # Show model routing table
 cargo run -- route
-#
-# Overlay routing from environment variables (AGENTOS_ROLE_*)
-# (`--env` is a backward-compatible alias for `--from-env`.)
-cargo run -- route --from-env
-cargo run -- route --env
 
 # Index repos for RAG
 cargo run -- index
@@ -211,12 +208,14 @@ export BATCH_SIZE=128
 export CHUNK_TOKENS=800
 export CHUNK_OVERLAP=0.25
 export RAG_REPO_ROOTS=/path/to/repo1:/path/to/repo2
-export AGENTOS_RAG_INDEX_MANIFEST=/etc/agentos/configs/rag_index_manifest.json
-export AGENTOS_RAG_JWT=<optional-bearer-token>
+export NEURALFORGE_RAG_INDEX_MANIFEST=/etc/neuralforge-memory/configs/rag_index_manifest.json
+# legacy: AGENTOS_RAG_INDEX_MANIFEST or RAG_INDEX_MANIFEST
+export NEURALFORGE_RAG_JWT=<optional-bearer-token>
+# legacy: AGENTOS_RAG_JWT (also accepts NEURALFORGE_MEMORY_RAG_JWT)
 
 # Observability (CLI-only, no embedded SDKs)
 export SENTRY_ORG="<sentry-org>"
-export SENTRY_PROJECT_AGENTOS_CORE="<sentry-project>"
+export SENTRY_PROJECT_NEURALFORGE_MEMORY="<sentry-project>"  # legacy: SENTRY_PROJECT_AGENTOS_CORE
 export NEW_RELIC_ACCOUNT_ID="<account-id>"
 ```
 
@@ -229,7 +228,7 @@ The server enforces a strict repo-centric canon:
 - Do not import assumptions from sibling repos unless context explicitly names them
 - Surface ambiguity instead of normalizing it across repos
 
-The default canon root is set by the deployment environment via `AGENTOS_CORE_CANON_ROOT` or `config/server.toml`.
+The default canon root is set by the deployment environment via `NEURALFORGE_MEMORY_CANON_ROOT` (legacy: `AGENTOS_CORE_CANON_ROOT`) or `config/server.toml`.
 
 ## Supported Clients
 

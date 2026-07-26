@@ -13,7 +13,8 @@ use crate::tools::ollama::{OllamaConfig, ollama_embed};
 use crate::tools::qdrant::{QdrantVectorRecord, qdrant_delete_vectors, qdrant_upsert_vectors};
 
 #[cfg(unix)]
-const SYSTEM_MANIFEST_PATH: &str = "/etc/agentos/configs/rag_index_manifest.json";
+const SYSTEM_MANIFEST_PATH: &str = "/etc/neuralforge-memory/configs/rag_index_manifest.json";
+const SYSTEM_MANIFEST_PATH_LEGACY: &str = "/etc/agentos/configs/rag_index_manifest.json";
 const DEFAULT_COLLECTION: &str = "repos";
 const DEFAULT_EMBEDDING_MODEL: &str = "nomic-embed-text:latest";
 const DEFAULT_QDRANT_HOST: &str = "http://127.0.0.1:6333";
@@ -147,7 +148,7 @@ struct ChunkMetadata {
 
 impl Orchestrator {
     pub fn from_env() -> Result<Self> {
-        let vector_db = resolved_vector_db_config();
+        let vector_db = resolved_vector_db_config()?;
         let collection = vector_db.collection.clone();
 
         let embedding_model =
@@ -163,13 +164,16 @@ impl Orchestrator {
             batch_size: env_usize("BATCH_SIZE", 128).max(1),
             chunk_tokens: env_usize("CHUNK_TOKENS", 800).max(1),
             chunk_overlap: env_f32("CHUNK_OVERLAP", 0.25).clamp(0.0, 0.95),
-            manifest_path: rag_index_manifest_path(),
+            manifest_path: rag_index_manifest_path()?,
             vector_db,
             ollama,
         })
     }
 
     pub async fn ingest_file(&self, request: FileIngestRequest) -> Result<OperationSummary> {
+        if !request.dry_run {
+            self.ensure_manifest_writable()?;
+        }
         let started = Instant::now();
         emit_event("ingest_started", 0, 0, 0, None, started);
         let (repo, relative_path) = split_source_path(&request.path);
@@ -192,6 +196,9 @@ impl Orchestrator {
     }
 
     pub async fn ingest_diff(&self, request: DiffIngestRequest) -> Result<OperationSummary> {
+        if !request.dry_run {
+            self.ensure_manifest_writable()?;
+        }
         let started = Instant::now();
         emit_event("ingest_started", 0, 0, 0, None, started);
         let repo_root = resolve_repo_root(&request.repo)?;
@@ -273,6 +280,9 @@ impl Orchestrator {
     }
 
     pub async fn rebuild(&self, request: RebuildRequest) -> Result<OperationSummary> {
+        if !request.dry_run {
+            self.ensure_manifest_writable()?;
+        }
         let started = Instant::now();
         emit_event("rebuild_started", 0, 0, 0, None, started);
         self.ensure_collection(&request.collection)?;
@@ -350,6 +360,7 @@ impl Orchestrator {
         let manifest = self.load_manifest().await?;
         let ids = manifest.chunks.keys().cloned().collect::<Vec<_>>();
         if request.mode == "all" {
+            self.ensure_manifest_writable()?;
             let summary = self
                 .vectors_delete(VectorDeleteRequest {
                     collection: self.collection.clone(),
@@ -642,44 +653,102 @@ impl Orchestrator {
         })
     }
 
+    fn effective_manifest_path(&self) -> Result<PathBuf> {
+        effective_manifest_path_for(&self.manifest_path)
+    }
+
+    /// Resolve a writable manifest path, migrating a read-only one if needed, and
+    /// return it. Callers that mutate Qdrant should call this before doing so:
+    /// without it, a read-only-but-parseable manifest is only discovered at
+    /// save_manifest() time, after vectors have already been mutated, leaving the
+    /// manifest permanently unable to track state that Qdrant now reflects.
+    fn ensure_manifest_writable(&self) -> Result<PathBuf> {
+        let effective = self.effective_manifest_path()?;
+        if effective.exists() {
+            return self.ensure_existing_manifest_writable(&effective);
+        }
+        ensure_manifest_parent_creatable(&effective)?;
+        Ok(effective)
+    }
+
+    /// `effective` is a manifest path that already exists: return it if writable,
+    /// otherwise migrate it to a writable destination (recording where, so future
+    /// calls reuse it), or fail loudly if no writable destination is available.
+    fn ensure_existing_manifest_writable(&self, effective: &Path) -> Result<PathBuf> {
+        if is_writable_file(effective) {
+            return Ok(effective.to_path_buf());
+        }
+        if let Some(destination) = migrate_manifest(effective) {
+            record_migration(&self.manifest_path, &destination)?;
+            return Ok(destination);
+        }
+        bail!(
+            "manifest at {} is not writable and no writable destination is available; move it to a writable NeuralForge-Memory config location before indexing",
+            effective.display()
+        );
+    }
+
     async fn load_manifest(&self) -> Result<IndexManifest> {
-        if tokio::fs::metadata(&self.manifest_path).await.is_err() {
+        let path = self.effective_manifest_path()?;
+        if tokio::fs::metadata(&path).await.is_err() {
             return Ok(IndexManifest::default());
         }
-        let raw = tokio::fs::read_to_string(&self.manifest_path)
+        let raw = tokio::fs::read_to_string(&path)
             .await
-            .with_context(|| format!("failed to read {}", self.manifest_path.display()))?;
-        serde_json::from_str(&raw)
-            .with_context(|| format!("failed to parse {}", self.manifest_path.display()))
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        serde_json::from_str(&raw).with_context(|| format!("failed to parse {}", path.display()))
     }
 
     async fn save_manifest(&self, manifest: &IndexManifest) -> Result<()> {
-        if let Some(parent) = self.manifest_path.parent() {
+        let path = self.ensure_manifest_writable()?;
+        if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent)
                 .await
                 .with_context(|| format!("failed to create {}", parent.display()))?;
         }
         let raw = serde_json::to_string_pretty(manifest)?;
-        tokio::fs::write(&self.manifest_path, raw)
+        tokio::fs::write(&path, raw)
             .await
-            .with_context(|| format!("failed to write {}", self.manifest_path.display()))
+            .with_context(|| format!("failed to write {}", path.display()))
     }
 }
 
-pub(crate) fn resolved_vector_db_config() -> VectorDbConfig {
-    let mut vector_db = load_vector_db_config().unwrap_or_else(|_| VectorDbConfig {
-        provider: "qdrant".to_string(),
-        host: DEFAULT_QDRANT_HOST.to_string(),
-        collection: DEFAULT_COLLECTION.to_string(),
-        embedding_dim: 768,
-        distance: "Cosine".to_string(),
-    });
+fn ensure_manifest_parent_creatable(effective: &Path) -> Result<()> {
+    if let Some(parent) = effective.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create manifest directory {}", parent.display()))?;
+        if !is_writable_dir(parent) {
+            bail!(
+                "manifest directory {} is not writable; move it to a writable NeuralForge-Memory config location before indexing",
+                parent.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn resolved_vector_db_config() -> Result<VectorDbConfig> {
+    // Only fall back to built-in defaults when no vector_db config exists at all.
+    // If one exists but fails to load (unreadable, malformed, a dangling symlink),
+    // that must be surfaced rather than silently swallowed into localhost defaults -
+    // otherwise a migrated deployment could write to the wrong Qdrant instance.
+    let mut vector_db = if crate::rag::vector_db_config_present()? {
+        load_vector_db_config()?
+    } else {
+        VectorDbConfig {
+            provider: "qdrant".to_string(),
+            host: DEFAULT_QDRANT_HOST.to_string(),
+            collection: DEFAULT_COLLECTION.to_string(),
+            embedding_dim: 768,
+            distance: "Cosine".to_string(),
+        }
+    };
 
     vector_db.collection = env_string("RAG_COLLECTION")
         .or_else(|| env_string("COLLECTION_NAME"))
         .unwrap_or_else(|| vector_db.collection.clone());
 
-    vector_db
+    Ok(vector_db)
 }
 
 pub(crate) fn resolve_ollama_endpoint() -> String {
@@ -1072,33 +1141,231 @@ fn sha256_hex(bytes: &[u8]) -> String {
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-pub(crate) fn rag_index_manifest_path() -> PathBuf {
-    env_string("AGENTOS_RAG_INDEX_MANIFEST")
-        .or_else(|| env_string("RAG_INDEX_MANIFEST"))
-        .map(PathBuf::from)
-        .unwrap_or_else(default_manifest_path)
+/// Prefer NeuralForge env names; AGENTOS_*/RAG_* kept as transition fallbacks (#7 /
+/// PR#8). Unlike `env_string`, an explicitly-set-but-invalid-Unicode override is a
+/// misconfiguration and is reported rather than silently treated as unset: a valid
+/// filesystem path can contain non-UTF-8 bytes on Unix, so quietly falling through
+/// to a legacy or default manifest would start indexing against the wrong tracking
+/// state instead of surfacing the broken deployment.
+pub(crate) fn rag_index_manifest_path() -> Result<PathBuf> {
+    for var in [
+        "NEURALFORGE_RAG_INDEX_MANIFEST",
+        "NEURALFORGE_MEMORY_RAG_INDEX_MANIFEST",
+        "AGENTOS_RAG_INDEX_MANIFEST",
+        "RAG_INDEX_MANIFEST",
+    ] {
+        match std::env::var(var) {
+            Ok(value) if !value.trim().is_empty() => return Ok(PathBuf::from(value)),
+            Ok(_) => {}
+            Err(std::env::VarError::NotPresent) => {}
+            Err(std::env::VarError::NotUnicode(_)) => {
+                bail!("{var} is set but is not valid unicode");
+            }
+        }
+    }
+    Ok(default_manifest_path())
 }
 
+/// Resolve where the manifest logically lives, without touching the filesystem
+/// beyond metadata/existence checks - no reads, writes, or migration happen here.
+/// This is called from read-only contexts (doctor checks, `Orchestrator::from_env`
+/// before any request arrives), so it must stay side-effect free; the actual
+/// migration of a read-only manifest to a writable location happens lazily in
+/// `Orchestrator::ensure_manifest_writable()`, right before a mutation begins.
 fn default_manifest_path() -> PathBuf {
     #[cfg(unix)]
     {
-        let system_path = PathBuf::from(SYSTEM_MANIFEST_PATH);
-        if system_path
-            .parent()
-            .map(|parent| parent.is_dir() && is_writable_dir(parent))
-            .unwrap_or(false)
-        {
-            return system_path;
+        // Prefer wherever a manifest already exists so a partial migration (new config
+        // dir created, but the manifest hasn't moved yet) doesn't start indexing from an
+        // empty map and orphan vectors tracked only in the legacy manifest.
+        for candidate in [SYSTEM_MANIFEST_PATH, SYSTEM_MANIFEST_PATH_LEGACY] {
+            let system_path = PathBuf::from(candidate);
+            // symlink_metadata(), not exists(): exists() follows symlinks, so a
+            // dangling symlink at this location would report "nothing here" and fall
+            // through to the writable-directory loop below, which would then treat
+            // the same broken symlink path as a fresh location to create.
+            // symlink_metadata() sees the link itself, so a dangling symlink is still
+            // treated as "something is here" rather than silently skipped past.
+            match system_path.symlink_metadata() {
+                Ok(_) => return system_path,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => return system_path,
+            }
+        }
+        for candidate in [SYSTEM_MANIFEST_PATH, SYSTEM_MANIFEST_PATH_LEGACY] {
+            let system_path = PathBuf::from(candidate);
+            if system_path
+                .parent()
+                .map(|parent| parent.is_dir() && is_writable_dir(parent))
+                .unwrap_or(false)
+            {
+                return system_path;
+            }
         }
     }
-    dirs::data_local_dir()
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
-        .join("agentos")
-        .join("rag_index_manifest.json")
+    default_local_manifest_path()
+}
+
+fn default_local_manifest_path() -> PathBuf {
+    let base = dirs::data_local_dir()
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let current = base
+        .join("neuralforge-memory")
+        .join("rag_index_manifest.json");
+    if current.exists() {
+        return current;
+    }
+    // An install predating the neuralforge-memory rename tracked chunks under the
+    // legacy `agentos` user-local dir. Keep using that file in place rather than
+    // starting fresh at the renamed path: this dir is always writable (unlike the
+    // /etc system locations), so there's no need to migrate it, and starting fresh
+    // would orphan vectors this manifest is the only record of.
+    let legacy = base.join("agentos").join("rag_index_manifest.json");
+    if legacy.exists() {
+        return legacy;
+    }
+    current
+}
+
+/// The manifest path actually in effect for `logical_path` right now: the recorded
+/// migration destination if one was already established, otherwise `logical_path`
+/// itself. Pure read - performs no migration, so it's safe to call from read-only
+/// contexts (health checks, doctor) without side effects.
+///
+/// A marker that names a destination which no longer exists is an error, not a
+/// reason to fall back to the frozen logical source: that destination is where
+/// tracking state has lived (and kept accumulating via saves) since the
+/// migration, so silently reverting to the stale source and letting indexing
+/// recreate a fresh copy from it would orphan every chunk recorded only in the
+/// now-missing destination.
+pub(crate) fn effective_manifest_path_for(logical_path: &Path) -> Result<PathBuf> {
+    let marker = migration_marker_path(logical_path);
+    match std::fs::read_to_string(&marker) {
+        Ok(recorded) => {
+            let recorded = PathBuf::from(recorded.trim());
+            if recorded.as_os_str().is_empty() {
+                bail!("manifest migration marker {} is empty", marker.display());
+            }
+            if !recorded.exists() {
+                bail!(
+                    "manifest migration marker {} points to {}, which no longer exists (it may have been deleted after the manifest was migrated there)",
+                    marker.display(),
+                    recorded.display()
+                );
+            }
+            Ok(recorded)
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(logical_path.to_path_buf()),
+        Err(err) => Err(err).with_context(|| {
+            format!(
+                "failed to read manifest migration marker {}",
+                marker.display()
+            )
+        }),
+    }
+}
+
+/// Path of the marker file recording where `logical_path` was migrated to, so the
+/// migration destination survives even after its content diverges from the
+/// (frozen, read-only) source through normal saves. Lives under the same writable
+/// user-local data dir used as the last-resort manifest destination - never beside
+/// `logical_path` itself, since that location is exactly what's unwritable when a
+/// migration is needed in the first place.
+fn migration_marker_path(logical_path: &Path) -> PathBuf {
+    // Resolve against the current directory before hashing: two deployments with
+    // different working directories that both set RAG_INDEX_MANIFEST to the same
+    // relative path would otherwise hash to the identical marker in the shared
+    // user-local data dir and end up following each other's migration destination.
+    let absolute = if logical_path.is_absolute() {
+        logical_path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(logical_path))
+            .unwrap_or_else(|_| logical_path.to_path_buf())
+    };
+    let key = sha256_hex(absolute.as_os_str().as_encoded_bytes());
+    let mut marker_dir = default_local_manifest_path();
+    marker_dir.pop();
+    marker_dir.join(format!("rag_index_manifest-{key}.migrated-to"))
+}
+
+fn record_migration(logical_path: &Path, destination: &Path) -> Result<()> {
+    let marker = migration_marker_path(logical_path);
+    if let Some(parent) = marker.parent() {
+        std::fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create manifest migration marker directory {}",
+                parent.display()
+            )
+        })?;
+    }
+    std::fs::write(&marker, destination.display().to_string()).with_context(|| {
+        format!(
+            "failed to record manifest migration marker at {}",
+            marker.display()
+        )
+    })
+}
+
+/// Copy an existing-but-not-writable manifest's contents to the first writable
+/// destination (preferring the NeuralForge-Memory system location, then the legacy
+/// one, then the user-local data dir), so persistence works from the very first save.
+/// Returns `None` if no destination accepted the write.
+fn migrate_manifest(source: &Path) -> Option<PathBuf> {
+    let raw = std::fs::read_to_string(source).ok()?;
+    // Validate before touching any destination: a malformed source must never be
+    // allowed to clobber a destination that may already hold a good manifest.
+    serde_json::from_str::<IndexManifest>(&raw).ok()?;
+
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    #[cfg(unix)]
+    for candidate in [SYSTEM_MANIFEST_PATH, SYSTEM_MANIFEST_PATH_LEGACY] {
+        let path = PathBuf::from(candidate);
+        if path != source {
+            candidates.push(path);
+        }
+    }
+    candidates.push(default_local_manifest_path());
+
+    candidates
+        .into_iter()
+        .find(|destination| migrate_to_candidate(destination, &raw))
+}
+
+/// Write `raw` to `destination` if that's safe. Returns whether `destination` is now
+/// (or already was) a usable manifest location.
+fn migrate_to_candidate(destination: &Path, raw: &str) -> bool {
+    if destination.exists() {
+        // A prior run may have already migrated `source`'s exact content into this
+        // destination - reuse it rather than re-running the migration every startup.
+        // Require a byte-exact match against the current source content (migration
+        // writes `raw` verbatim, so a genuine prior migration of this same source
+        // reads back identically): a destination that merely happens to hold some
+        // other valid-but-unrelated manifest must not be adopted, since that would
+        // silently discard source's own tracking data instead of migrating it. Also
+        // require it to still be writable - a byte-identical but now-read-only
+        // candidate must not be reported usable, or the preflight would pass while
+        // the eventual save still fails after Qdrant has already been mutated.
+        return is_writable_file(destination) && is_manifest_copy_of(destination, raw);
+    }
+    if let Some(parent) = destination.parent()
+        && std::fs::create_dir_all(parent).is_err()
+    {
+        return false;
+    }
+    std::fs::write(destination, raw).is_ok()
+}
+
+fn is_manifest_copy_of(path: &Path, raw: &str) -> bool {
+    std::fs::read_to_string(path).is_ok_and(|existing| existing == raw)
+}
+
+fn is_writable_file(path: &Path) -> bool {
+    std::fs::OpenOptions::new().write(true).open(path).is_ok()
 }
 
 fn is_writable_dir(path: &Path) -> bool {
-    let test_path = path.join(format!(".agentos-write-test-{}", std::process::id()));
+    let test_path = path.join(format!(".neuralforge-write-test-{}", std::process::id()));
     match std::fs::OpenOptions::new()
         .create_new(true)
         .write(true)
@@ -1135,10 +1402,10 @@ mod tests {
 
     #[test]
     fn vector_id_is_stable_sha256_hex() {
-        let id = chunk_id("agentos-core:src/main.rs", 3);
+        let id = chunk_id("neuralforge-memory:src/main.rs", 3);
         assert_eq!(id.len(), 64);
-        assert_eq!(id, chunk_id("agentos-core:src/main.rs", 3));
-        assert_ne!(id, chunk_id("agentos-core:src/main.rs", 4));
+        assert_eq!(id, chunk_id("neuralforge-memory:src/main.rs", 3));
+        assert_ne!(id, chunk_id("neuralforge-memory:src/main.rs", 4));
     }
 
     #[test]

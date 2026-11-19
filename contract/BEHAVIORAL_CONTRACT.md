@@ -184,4 +184,7 @@ Each target is individually citable as `§5.<n>`.
 - **§6.3 Versioning.** Changes to this contract require a version bump and
   are applied prospectively; historical records are not retroactively
   re-scored unless the rubric version explicitly says so. Citations carry
-  the version so the governing rule text is always recoverable.
+  the version so the governing rule text is always recoverable: each
+  contract version is snapshotted by a git tag (`contract-v<version>`), and
+  the text of any cited `§<n>.<m>` rule at a cited version is obtained from
+  that tag.

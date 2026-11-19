@@ -43,23 +43,26 @@ Cargo.toml   Rust workspace root — all pipeline code is Rust
 
 ## Data flow
 
+The pipeline is scaffolded but not yet implemented — each stage lands via its
+own issue. The intended flow:
+
 ```
 contract → taxonomy → generation → verification → assembly → Hugging Face
 ```
 
 1. **Contract** — `contract/BEHAVIORAL_CONTRACT.md` defines the six
    competencies, tone rules, critical failures (hard rejects), the privacy
-   rule, positive targets, and conformance requirements.
+   rule, positive targets, and conformance requirements. *(landed)*
 2. **Taxonomy** — scenarios are enumerated per competency with coverage
-   targets.
+   targets. *(planned)*
 3. **Generation** — SFT records and DPO preference pairs are generated against
-   the taxonomy (procedural + teacher generation).
+   the taxonomy (procedural + teacher generation). *(planned)*
 4. **Verification** — rubric scoring, critical-failure screen (§3), and
-   privacy screen (§4); records are admitted or rejected.
+   privacy screen (§4); records are admitted or rejected. *(planned)*
 5. **Assembly** — admitted records are deduplicated, split, and packaged with
-   per-competency counts and a dataset card.
+   per-competency counts and a dataset card. *(planned)*
 6. **Hugging Face** — the assembled dataset is published to the Hugging Face
-   Hub with integrity checks.
+   Hub with integrity checks. *(planned)*
 
 ## Development
 

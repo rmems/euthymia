@@ -4,28 +4,33 @@
 
 use std::collections::HashSet;
 
-use crate::enums::{Family, VerificationStatus};
+use crate::enums::{Competency, Family, VerificationStatus};
 use crate::records::{DpoPairRecord, Provenance, SftRecord, VerificationResult};
 
-/// The leg of D7 shared by both record types: a labeled negative fixture
-/// must never be admitted.
-fn never_admitted(
+/// §3 legs shared by both record types: a labeled negative fixture must
+/// never be admitted, and a recorded critical failure is only coherent on a
+/// labeled negative fixture — a critical failure on an ordinary record is a
+/// hard reject, not a valid datum.
+fn critical_failure_errors(
     is_negative_fixture: bool,
     verification: Option<&VerificationResult>,
-) -> Option<String> {
-    if is_negative_fixture
-        && matches!(
-            verification.map(|v| v.status),
-            Some(VerificationStatus::Admitted)
-        )
-    {
-        Some(
-            "negative fixture must never have verification.status = admitted (contract §3)"
-                .to_string(),
-        )
-    } else {
-        None
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    if let Some(v) = verification {
+        if is_negative_fixture && v.status == VerificationStatus::Admitted {
+            errors.push(
+                "negative fixture must never have verification.status = admitted (contract §3)"
+                    .to_string(),
+            );
+        }
+        if !is_negative_fixture && v.critical_failure.is_some() {
+            errors.push(
+                "verification.critical_failure may only be recorded on a labeled negative fixture (contract §3)"
+                    .to_string(),
+            );
+        }
     }
+    errors
 }
 
 /// The `scenario_id` family code must match `family` — the ID pattern (D8)
@@ -100,19 +105,29 @@ fn verification_date_error(verification: &VerificationResult) -> Option<String> 
 fn shared_errors(
     scenario_id: &str,
     family: Family,
+    primary_competency: Competency,
     is_negative_fixture: bool,
     provenance: &Provenance,
     verification: Option<&VerificationResult>,
 ) -> Vec<String> {
-    [
-        never_admitted(is_negative_fixture, verification),
-        family_code_error(scenario_id, family),
-        provenance_errors(provenance),
-        verification.and_then(verification_date_error),
-    ]
-    .into_iter()
-    .flatten()
-    .collect()
+    let mut errors = critical_failure_errors(is_negative_fixture, verification);
+    errors.extend(
+        [
+            family_code_error(scenario_id, family),
+            provenance_errors(provenance),
+            verification.and_then(verification_date_error),
+            if family.primary_pool().contains(&primary_competency) {
+                None
+            } else {
+                Some(format!(
+                    "primary_competency {primary_competency:?} is outside the {family:?} pool"
+                ))
+            },
+        ]
+        .into_iter()
+        .flatten(),
+    );
+    errors
 }
 
 /// Cross-field rules for an [`SftRecord`] (D4, D7–D9, plus the taxonomy's
@@ -121,6 +136,7 @@ pub fn sft_cross_field_errors(record: &SftRecord) -> Vec<String> {
     let mut errors = shared_errors(
         &record.scenario_id,
         record.family,
+        record.primary_competency,
         record.is_negative_fixture,
         &record.provenance,
         record.verification.as_ref(),
@@ -153,11 +169,12 @@ pub fn sft_cross_field_errors(record: &SftRecord) -> Vec<String> {
     {
         errors.push("secondary_competencies must not contain primary_competency".to_string());
     }
-    let mut seen = HashSet::new();
     if record
         .secondary_competencies
         .iter()
-        .any(|c| !seen.insert(c))
+        .collect::<HashSet<_>>()
+        .len()
+        != record.secondary_competencies.len()
     {
         errors.push("secondary_competencies must be unique".to_string());
     }
@@ -184,6 +201,7 @@ pub fn dpo_cross_field_errors(record: &DpoPairRecord) -> Vec<String> {
     let mut errors = shared_errors(
         &record.scenario_id,
         record.family,
+        record.primary_competency,
         record.is_negative_fixture,
         &record.provenance,
         record.verification.as_ref(),

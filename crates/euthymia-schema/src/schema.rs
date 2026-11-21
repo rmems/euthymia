@@ -61,13 +61,20 @@ pub fn schemas_dir() -> PathBuf {
 }
 
 /// Write both schema files under `dir` in canonical rendering. Used by
-/// `schema-gen`.
+/// `schema-gen`. Both documents are rendered up front and each file lands via
+/// a temporary file + rename, so readers never see a partially written schema
+/// and a render failure leaves both checked-in files untouched.
 pub fn write_schemas(dir: &Path) -> std::io::Result<()> {
     fs::create_dir_all(dir)?;
-    fs::write(
-        dir.join(SFT_SCHEMA_FILE),
-        render_schema(&sft_record_schema()),
-    )?;
-    fs::write(dir.join(DPO_SCHEMA_FILE), render_schema(&dpo_pair_schema()))?;
+    let rendered = [
+        (SFT_SCHEMA_FILE, render_schema(&sft_record_schema())),
+        (DPO_SCHEMA_FILE, render_schema(&dpo_pair_schema())),
+    ];
+    for (file, contents) in rendered {
+        let target = dir.join(file);
+        let temp = dir.join(format!("{file}.tmp"));
+        fs::write(&temp, contents)?;
+        fs::rename(&temp, &target)?;
+    }
     Ok(())
 }

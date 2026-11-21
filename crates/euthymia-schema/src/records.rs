@@ -57,7 +57,7 @@ fn const_schema(value: serde_json::Value) -> Schema {
 /// every other value on deserialize, and appears as `{"const": 1}` in the
 /// generated schema (D2). A newtype so an out-of-version record cannot be
 /// constructed in Rust either.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SchemaVersion;
 
 impl SchemaVersion {
@@ -95,7 +95,7 @@ impl JsonSchema for SchemaVersion {
 
 /// `contract_version` field: the pinned string [`CONTRACT_VERSION`], enforced
 /// the same way as [`SchemaVersion`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ContractVersion;
 
 impl ContractVersion {

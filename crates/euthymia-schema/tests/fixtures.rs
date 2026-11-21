@@ -40,8 +40,8 @@ fn assert_fails_for(record: &str, file: &str, rule: &str) {
         "{file} should fail for its named rule {rule:?}, got:\n{stderr}"
     );
     assert!(
-        stderr.contains(":1:"),
-        "{file} error should carry the line number, got:\n{stderr}"
+        stderr.lines().all(|l| l.contains(".jsonl:")),
+        "{file} errors should be reported as <file>:<line>: <error>, got:\n{stderr}"
     );
 }
 
@@ -113,6 +113,16 @@ fn invalid_fixtures_fail_for_named_rules() {
             "sft",
             "invalid_sft_impossible_date.jsonl",
             "not a real calendar date",
+        ),
+        (
+            "sft",
+            "invalid_sft_primary_outside_pool.jsonl",
+            "outside the Jealousy pool",
+        ),
+        (
+            "sft",
+            "invalid_sft_duplicate_id.jsonl",
+            "duplicate eu-brk-001",
         ),
         (
             "dpo",

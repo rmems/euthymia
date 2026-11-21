@@ -32,6 +32,55 @@ impl Family {
         }
     }
 
+    /// The competencies a record in this family may carry as its primary —
+    /// taxonomy "Primary competencies" list per family (#12), equivalent to
+    /// the non-zero cells of the coverage matrix.
+    pub fn primary_pool(self) -> &'static [Competency] {
+        match self {
+            Self::Breakups => &[
+                Competency::EmotionalAwareness,
+                Competency::PersonalAccountability,
+                Competency::HealthyBoundaries,
+                Competency::LongTermResilience,
+            ],
+            Self::Anger => &[
+                Competency::EmotionalAwareness,
+                Competency::CognitiveDiscipline,
+                Competency::BehavioralControl,
+            ],
+            Self::DisciplineMotivation => &[
+                Competency::CognitiveDiscipline,
+                Competency::PersonalAccountability,
+                Competency::BehavioralControl,
+                Competency::LongTermResilience,
+            ],
+            Self::Recovery => &[
+                Competency::EmotionalAwareness,
+                Competency::PersonalAccountability,
+                Competency::BehavioralControl,
+                Competency::LongTermResilience,
+            ],
+            Self::Jealousy => &[
+                Competency::EmotionalAwareness,
+                Competency::CognitiveDiscipline,
+                Competency::HealthyBoundaries,
+            ],
+            Self::Boundaries => &[
+                Competency::CognitiveDiscipline,
+                Competency::PersonalAccountability,
+                Competency::BehavioralControl,
+                Competency::HealthyBoundaries,
+            ],
+            Self::FailureSetbacks => &[
+                Competency::EmotionalAwareness,
+                Competency::CognitiveDiscipline,
+                Competency::PersonalAccountability,
+                Competency::BehavioralControl,
+                Competency::LongTermResilience,
+            ],
+        }
+    }
+
     /// The allowed secondary-competency pool for this family — taxonomy
     /// "Secondary-competency pools" (#12). A record's secondaries must come
     /// only from this pool and never equal the primary.

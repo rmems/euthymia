@@ -72,7 +72,9 @@ pub fn write_schemas(dir: &Path) -> std::io::Result<()> {
     ];
     for (file, contents) in rendered {
         let target = dir.join(file);
-        let temp = dir.join(format!("{file}.tmp"));
+        // Per-process staging name: overlapping schema-gen runs must not
+        // truncate each other's temp file.
+        let temp = dir.join(format!(".{file}.{}.tmp", std::process::id()));
         fs::write(&temp, contents)?;
         fs::rename(&temp, &target)?;
     }

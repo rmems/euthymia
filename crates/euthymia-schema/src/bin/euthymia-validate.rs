@@ -14,7 +14,7 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use clap::{Parser, ValueEnum};
 use euthymia_schema::schema::{DPO_SCHEMA_FILE, SFT_SCHEMA_FILE};
 use euthymia_schema::validate::{dpo_cross_field_errors, sft_cross_field_errors};
@@ -63,20 +63,37 @@ fn main() -> Result<ExitCode> {
 }
 
 fn embedded_schema(kind: RecordKind) -> Result<Value> {
-    // Literal paths: include_str! resolves at compile time relative to this
-    // file. Keep them in sync with SFT_SCHEMA_FILE / DPO_SCHEMA_FILE.
-    let text = match kind {
-        RecordKind::Sft => include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../schemas/sft_record.v1.json"
-        )),
-        RecordKind::Dpo => include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../schemas/dpo_pair.v1.json"
-        )),
+    // include_str! needs literal paths; a version bump that updates
+    // SFT_SCHEMA_FILE/DPO_SCHEMA_FILE but not these paths would silently
+    // validate against the previous schema. The generated $id names its
+    // file, so check it against the constant instead of trusting the literal.
+    let (text, expected_file) = match kind {
+        RecordKind::Sft => (
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../schemas/sft_record.v1.json"
+            )),
+            SFT_SCHEMA_FILE,
+        ),
+        RecordKind::Dpo => (
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../schemas/dpo_pair.v1.json"
+            )),
+            DPO_SCHEMA_FILE,
+        ),
     };
-    let _ = (SFT_SCHEMA_FILE, DPO_SCHEMA_FILE); // named in docs above
-    serde_json::from_str(text).context("embedded schema failed to parse")
+    let schema: Value = serde_json::from_str(text).context("embedded schema failed to parse")?;
+    let id_file = schema
+        .get("$id")
+        .and_then(Value::as_str)
+        .and_then(|id| id.rsplit('/').next())
+        .unwrap_or_default();
+    ensure!(
+        id_file == expected_file,
+        "embedded schema is {id_file}, expected {expected_file} — bump the include_str! paths with the version"
+    );
+    Ok(schema)
 }
 
 fn validate_file(path: &Path, kind: RecordKind, validator: &jsonschema::Validator) -> usize {

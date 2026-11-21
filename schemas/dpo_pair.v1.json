@@ -86,6 +86,7 @@
       "properties": {
         "generated_at": {
           "description": "ISO date (`YYYY-MM-DD`).",
+          "format": "date",
           "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
           "type": "string"
         },
@@ -150,6 +151,7 @@
         },
         "verified_at": {
           "description": "ISO date (`YYYY-MM-DD`).",
+          "format": "date",
           "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
           "type": [
             "string",

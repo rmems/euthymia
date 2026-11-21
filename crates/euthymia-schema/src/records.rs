@@ -27,6 +27,13 @@ pub const PAIR_ID_PATTERN: &str = r"^eu-dpo-[0-9]{3}$";
 /// ISO calendar date (`YYYY-MM-DD`) for provenance/verification timestamps.
 const ISO_DATE_PATTERN: &str = r"^\d{4}-\d{2}-\d{2}$";
 
+/// Adds `format: "date"` to a string schema so format-aware JSON Schema
+/// consumers (and `euthymia-validate`, which enables format assertions)
+/// check real calendar dates, not only the pattern.
+fn date_format(schema: &mut schemars::Schema) {
+    schema.insert("format".into(), serde_json::Value::from("date"));
+}
+
 /// Deserialize a field that is pinned to one exact value: any other value
 /// fails to deserialize (D2's rule, shared by the version newtypes).
 fn deserialize_pinned<'de, D, T>(
@@ -145,7 +152,7 @@ pub struct Provenance {
     pub generator_id: String,
     pub prompt_version: String,
     /// ISO date (`YYYY-MM-DD`).
-    #[schemars(regex(pattern = ISO_DATE_PATTERN))]
+    #[schemars(regex(pattern = ISO_DATE_PATTERN), transform = date_format)]
     pub generated_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seed: Option<u64>,
@@ -168,7 +175,7 @@ pub struct VerificationResult {
     pub verified_by: Option<String>,
     /// ISO date (`YYYY-MM-DD`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(regex(pattern = ISO_DATE_PATTERN))]
+    #[schemars(regex(pattern = ISO_DATE_PATTERN), transform = date_format)]
     pub verified_at: Option<String>,
 }
 

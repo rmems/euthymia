@@ -47,8 +47,13 @@ fn main() -> Result<ExitCode> {
     let cli = Cli::parse();
 
     let schema_json = embedded_schema(cli.record)?;
-    let validator =
-        jsonschema::validator_for(&schema_json).context("embedded schema failed to compile")?;
+    // Format assertions are opt-in for Draft 2020-12; the schemas mark date
+    // fields `format: "date"` so impossible dates fail at the schema layer,
+    // not only in the cross-field rules.
+    let validator = jsonschema::options()
+        .should_validate_formats(true)
+        .build(&schema_json)
+        .context("embedded schema failed to compile")?;
 
     let mut failures = 0usize;
     for path in &cli.files {

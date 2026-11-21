@@ -108,31 +108,27 @@ struct SharedView<'a> {
     verification: Option<&'a VerificationResult>,
 }
 
-impl<'a> From<&'a SftRecord> for SharedView<'a> {
-    fn from(record: &'a SftRecord) -> Self {
-        Self {
-            scenario_id: &record.scenario_id,
-            family: record.family,
-            primary_competency: record.primary_competency,
-            is_negative_fixture: record.is_negative_fixture,
-            provenance: &record.provenance,
-            verification: record.verification.as_ref(),
-        }
-    }
+/// Both record types expose the identical shared field set — the impl is
+/// written once per type via macro rather than copy-pasted.
+macro_rules! impl_shared_view {
+    ($($record:ty),+) => {
+        $(
+            impl<'a> From<&'a $record> for SharedView<'a> {
+                fn from(record: &'a $record) -> Self {
+                    Self {
+                        scenario_id: &record.scenario_id,
+                        family: record.family,
+                        primary_competency: record.primary_competency,
+                        is_negative_fixture: record.is_negative_fixture,
+                        provenance: &record.provenance,
+                        verification: record.verification.as_ref(),
+                    }
+                }
+            }
+        )+
+    };
 }
-
-impl<'a> From<&'a DpoPairRecord> for SharedView<'a> {
-    fn from(record: &'a DpoPairRecord) -> Self {
-        Self {
-            scenario_id: &record.scenario_id,
-            family: record.family,
-            primary_competency: record.primary_competency,
-            is_negative_fixture: record.is_negative_fixture,
-            provenance: &record.provenance,
-            verification: record.verification.as_ref(),
-        }
-    }
-}
+impl_shared_view!(SftRecord, DpoPairRecord);
 
 fn shared_errors(view: &SharedView<'_>) -> Vec<String> {
     let mut errors = critical_failure_errors(view.is_negative_fixture, view.verification);

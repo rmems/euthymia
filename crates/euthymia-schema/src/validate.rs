@@ -97,25 +97,60 @@ fn verification_date_error(verification: &VerificationResult) -> Option<String> 
         .and_then(|date| calendar_date_error("verification.verified_at", date))
 }
 
-fn shared_errors(
-    scenario_id: &str,
+/// The fields both record types share — the shared rules take this view
+/// rather than six loose arguments.
+struct SharedView<'a> {
+    scenario_id: &'a str,
     family: Family,
     primary_competency: Competency,
     is_negative_fixture: bool,
-    provenance: &Provenance,
-    verification: Option<&VerificationResult>,
-) -> Vec<String> {
-    let mut errors = critical_failure_errors(is_negative_fixture, verification);
+    provenance: &'a Provenance,
+    verification: Option<&'a VerificationResult>,
+}
+
+impl<'a> From<&'a SftRecord> for SharedView<'a> {
+    fn from(record: &'a SftRecord) -> Self {
+        Self {
+            scenario_id: &record.scenario_id,
+            family: record.family,
+            primary_competency: record.primary_competency,
+            is_negative_fixture: record.is_negative_fixture,
+            provenance: &record.provenance,
+            verification: record.verification.as_ref(),
+        }
+    }
+}
+
+impl<'a> From<&'a DpoPairRecord> for SharedView<'a> {
+    fn from(record: &'a DpoPairRecord) -> Self {
+        Self {
+            scenario_id: &record.scenario_id,
+            family: record.family,
+            primary_competency: record.primary_competency,
+            is_negative_fixture: record.is_negative_fixture,
+            provenance: &record.provenance,
+            verification: record.verification.as_ref(),
+        }
+    }
+}
+
+fn shared_errors(view: &SharedView<'_>) -> Vec<String> {
+    let mut errors = critical_failure_errors(view.is_negative_fixture, view.verification);
     errors.extend(
         [
-            family_code_error(scenario_id, family),
-            provenance_errors(provenance),
-            verification.and_then(verification_date_error),
-            if family.primary_pool().contains(&primary_competency) {
+            family_code_error(view.scenario_id, view.family),
+            provenance_errors(view.provenance),
+            view.verification.and_then(verification_date_error),
+            if view
+                .family
+                .primary_pool()
+                .contains(&view.primary_competency)
+            {
                 None
             } else {
                 Some(format!(
-                    "primary_competency {primary_competency:?} is outside the {family:?} pool"
+                    "primary_competency {:?} is outside the {:?} pool",
+                    view.primary_competency, view.family
                 ))
             },
         ]
@@ -171,14 +206,7 @@ fn secondary_competency_errors(record: &SftRecord) -> Vec<String> {
 /// Cross-field rules for an [`SftRecord`] (D4, D7–D9, plus the taxonomy's
 /// secondary-pool rule).
 pub fn sft_cross_field_errors(record: &SftRecord) -> Vec<String> {
-    let mut errors = shared_errors(
-        &record.scenario_id,
-        record.family,
-        record.primary_competency,
-        record.is_negative_fixture,
-        &record.provenance,
-        record.verification.as_ref(),
-    );
+    let mut errors = shared_errors(&record.into());
     errors.extend(expected_rejection_error(record));
     errors.extend(secondary_competency_errors(record));
     errors
@@ -189,14 +217,7 @@ pub fn dpo_cross_field_errors(record: &DpoPairRecord) -> Vec<String> {
     // The DPO record has no expected_rejection field (D5): a pair labels a
     // §3-violating rejected side with is_negative_fixture, so only the
     // "never admitted" leg of D7 applies.
-    let mut errors = shared_errors(
-        &record.scenario_id,
-        record.family,
-        record.primary_competency,
-        record.is_negative_fixture,
-        &record.provenance,
-        record.verification.as_ref(),
-    );
+    let mut errors = shared_errors(&record.into());
 
     if record.chosen == record.rejected {
         errors.push("chosen and rejected must differ".to_string());

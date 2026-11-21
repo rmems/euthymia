@@ -95,39 +95,44 @@ fn validate_file(path: &Path, kind: RecordKind, validator: &jsonschema::Validato
     let mut seen_ids: HashMap<String, usize> = HashMap::new();
 
     for (index, line) in BufReader::new(file).lines().enumerate() {
-        let line_no = index + 1;
+        let pos = Pos {
+            path,
+            line: index + 1,
+        };
         let line = match line {
             Ok(line) => line,
             Err(err) => {
                 // A mid-file read error (e.g. invalid UTF-8) fails the file;
                 // there is no trustworthy line boundary to resume from.
-                report(path, line_no, err);
+                report(pos, err);
                 return failures + 1;
             }
         };
         if line.trim().is_empty() {
             continue;
         }
-        failures += check_line(path, line_no, &line, kind, validator);
-        failures += check_duplicate_id(&mut seen_ids, path, line_no, &line, kind);
+        failures += check_line(pos, &line, |l| validate_line(l, kind, validator));
+        failures += check_duplicate_id(&mut seen_ids, pos, &line, kind);
     }
     failures
 }
 
-fn report(path: &Path, line_no: usize, error: impl std::fmt::Display) {
-    eprintln!("{}:{line_no}: {error}", path.display());
+/// Where a JSONL line sits — every diagnostic prints as
+/// `<file>:<line>: <error>`.
+#[derive(Clone, Copy)]
+struct Pos<'a> {
+    path: &'a Path,
+    line: usize,
 }
 
-fn check_line(
-    path: &Path,
-    line_no: usize,
-    line: &str,
-    kind: RecordKind,
-    validator: &jsonschema::Validator,
-) -> usize {
-    let errors = validate_line(line, kind, validator);
+fn report(pos: Pos<'_>, error: impl std::fmt::Display) {
+    eprintln!("{}:{}: {error}", pos.path.display(), pos.line);
+}
+
+fn check_line(pos: Pos<'_>, line: &str, check: impl FnOnce(&str) -> Vec<String>) -> usize {
+    let errors = check(line);
     for error in &errors {
-        report(path, line_no, error);
+        report(pos, error);
     }
     errors.len()
 }
@@ -136,8 +141,7 @@ fn check_line(
 /// per-line validity.
 fn check_duplicate_id(
     seen_ids: &mut HashMap<String, usize>,
-    path: &Path,
-    line_no: usize,
+    pos: Pos<'_>,
     line: &str,
     kind: RecordKind,
 ) -> usize {
@@ -147,14 +151,13 @@ fn check_duplicate_id(
     match seen_ids.get(&id) {
         Some(first) => {
             report(
-                path,
-                line_no,
+                pos,
                 format_args!("duplicate {id} (first seen at line {first})"),
             );
             1
         }
         None => {
-            seen_ids.insert(id, line_no);
+            seen_ids.insert(id, pos.line);
             0
         }
     }

@@ -82,24 +82,19 @@ fn valid_calendar_date(date: &str) -> bool {
     (1..=days_in_month).contains(&day)
 }
 
+fn calendar_date_error(field: &str, date: &str) -> Option<String> {
+    (!valid_calendar_date(date)).then(|| format!("{field} {date:?} is not a real calendar date"))
+}
+
 fn provenance_errors(provenance: &Provenance) -> Option<String> {
-    if valid_calendar_date(&provenance.generated_at) {
-        None
-    } else {
-        Some(format!(
-            "provenance.generated_at {:?} is not a real calendar date",
-            provenance.generated_at
-        ))
-    }
+    calendar_date_error("provenance.generated_at", &provenance.generated_at)
 }
 
 fn verification_date_error(verification: &VerificationResult) -> Option<String> {
-    match &verification.verified_at {
-        Some(date) if !valid_calendar_date(date) => Some(format!(
-            "verification.verified_at {date:?} is not a real calendar date"
-        )),
-        _ => None,
-    }
+    verification
+        .verified_at
+        .as_deref()
+        .and_then(|date| calendar_date_error("verification.verified_at", date))
 }
 
 fn shared_errors(
@@ -130,6 +125,49 @@ fn shared_errors(
     errors
 }
 
+/// A labeled negative fixture must name the rule expected to reject it
+/// (D7); an empty citation is not a label, and the field is meaningless on
+/// a positive record.
+fn expected_rejection_error(record: &SftRecord) -> Option<String> {
+    match record.expected_rejection.as_deref().map(str::trim) {
+        _ if !record.is_negative_fixture => record.expected_rejection.is_some().then(|| {
+            "expected_rejection may only be present on a labeled negative fixture".to_string()
+        }),
+        Some(citation) if !citation.is_empty() => None,
+        Some(_) => {
+            Some("negative fixture must carry a non-empty expected_rejection citation".to_string())
+        }
+        None => Some(
+            "negative fixture must carry expected_rejection (contract §3 labeled negative fixture)"
+                .to_string(),
+        ),
+    }
+}
+
+fn secondary_competency_errors(record: &SftRecord) -> Vec<String> {
+    let secondaries = &record.secondary_competencies;
+    let mut errors = Vec::new();
+    if secondaries.contains(&record.primary_competency) {
+        errors.push("secondary_competencies must not contain primary_competency".to_string());
+    }
+    if secondaries.iter().collect::<HashSet<_>>().len() != secondaries.len() {
+        errors.push("secondary_competencies must be unique".to_string());
+    }
+    if secondaries.len() > 2 {
+        errors.push("secondary_competencies allows at most 2 entries".to_string());
+    }
+    let pool = record.family.secondary_pool();
+    for competency in secondaries {
+        if !pool.contains(competency) {
+            errors.push(format!(
+                "secondary_competency {competency:?} is outside the {:?} pool",
+                record.family
+            ));
+        }
+    }
+    errors
+}
+
 /// Cross-field rules for an [`SftRecord`] (D4, D7–D9, plus the taxonomy's
 /// secondary-pool rule).
 pub fn sft_cross_field_errors(record: &SftRecord) -> Vec<String> {
@@ -141,55 +179,8 @@ pub fn sft_cross_field_errors(record: &SftRecord) -> Vec<String> {
         &record.provenance,
         record.verification.as_ref(),
     );
-
-    // A labeled negative fixture must name the rule expected to reject it
-    // (D7); an empty citation is not a label.
-    match record.expected_rejection.as_deref().map(str::trim) {
-        _ if !record.is_negative_fixture => {
-            if record.expected_rejection.is_some() {
-                errors.push(
-                    "expected_rejection may only be present on a labeled negative fixture"
-                        .to_string(),
-                );
-            }
-        }
-        Some(citation) if !citation.is_empty() => {}
-        Some(_) => errors.push(
-            "negative fixture must carry a non-empty expected_rejection citation".to_string(),
-        ),
-        None => errors.push(
-            "negative fixture must carry expected_rejection (contract §3 labeled negative fixture)"
-                .to_string(),
-        ),
-    }
-
-    if record
-        .secondary_competencies
-        .contains(&record.primary_competency)
-    {
-        errors.push("secondary_competencies must not contain primary_competency".to_string());
-    }
-    if record
-        .secondary_competencies
-        .iter()
-        .collect::<HashSet<_>>()
-        .len()
-        != record.secondary_competencies.len()
-    {
-        errors.push("secondary_competencies must be unique".to_string());
-    }
-    if record.secondary_competencies.len() > 2 {
-        errors.push("secondary_competencies allows at most 2 entries".to_string());
-    }
-    let pool = record.family.secondary_pool();
-    for competency in &record.secondary_competencies {
-        if !pool.contains(competency) {
-            errors.push(format!(
-                "secondary_competency {competency:?} is outside the {:?} pool",
-                record.family
-            ));
-        }
-    }
+    errors.extend(expected_rejection_error(record));
+    errors.extend(secondary_competency_errors(record));
     errors
 }
 

@@ -18,7 +18,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
 use euthymia_schema::schema::{DPO_SCHEMA_FILE, SFT_SCHEMA_FILE};
 use euthymia_schema::validate::{dpo_cross_field_errors, sft_cross_field_errors};
-use euthymia_schema::{DpoPairRecord, SftRecord};
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 #[derive(Parser)]
@@ -101,35 +101,63 @@ fn validate_file(path: &Path, kind: RecordKind, validator: &jsonschema::Validato
             Err(err) => {
                 // A mid-file read error (e.g. invalid UTF-8) fails the file;
                 // there is no trustworthy line boundary to resume from.
-                eprintln!("{}:{line_no}: {err}", path.display());
+                report(path, line_no, err);
                 return failures + 1;
             }
         };
         if line.trim().is_empty() {
             continue;
         }
-        for error in validate_line(&line, kind, validator) {
-            eprintln!("{}:{line_no}: {error}", path.display());
-            failures += 1;
-        }
-        // Duplicate record ids inside a file are corrupt data regardless of
-        // per-line validity.
-        if let Some(id) = record_id(&line, kind) {
-            match seen_ids.get(&id) {
-                Some(first) => {
-                    eprintln!(
-                        "{}:{line_no}: duplicate {id} (first seen at line {first})",
-                        path.display()
-                    );
-                    failures += 1;
-                }
-                None => {
-                    seen_ids.insert(id, line_no);
-                }
-            }
-        }
+        failures += check_line(path, line_no, &line, kind, validator);
+        failures += check_duplicate_id(&mut seen_ids, path, line_no, &line, kind);
     }
     failures
+}
+
+fn report(path: &Path, line_no: usize, error: impl std::fmt::Display) {
+    eprintln!("{}:{line_no}: {error}", path.display());
+}
+
+fn check_line(
+    path: &Path,
+    line_no: usize,
+    line: &str,
+    kind: RecordKind,
+    validator: &jsonschema::Validator,
+) -> usize {
+    let errors = validate_line(line, kind, validator);
+    for error in &errors {
+        report(path, line_no, error);
+    }
+    errors.len()
+}
+
+/// Duplicate record ids inside a file are corrupt data regardless of
+/// per-line validity.
+fn check_duplicate_id(
+    seen_ids: &mut HashMap<String, usize>,
+    path: &Path,
+    line_no: usize,
+    line: &str,
+    kind: RecordKind,
+) -> usize {
+    let Some(id) = record_id(line, kind) else {
+        return 0;
+    };
+    match seen_ids.get(&id) {
+        Some(first) => {
+            report(
+                path,
+                line_no,
+                format_args!("duplicate {id} (first seen at line {first})"),
+            );
+            1
+        }
+        None => {
+            seen_ids.insert(id, line_no);
+            0
+        }
+    }
 }
 
 /// Pull the identifying id off a line without full validation — best-effort,
@@ -146,6 +174,23 @@ fn record_id(line: &str, kind: RecordKind) -> Option<String> {
         .map(str::to_string)
 }
 
+/// Deserialization plus cross-field rules, shared by both record kinds.
+/// Schema failures usually make deserialization fail too, but not always
+/// (e.g. maxItems has no Rust equivalent) — run the cross-field rules
+/// whenever the record deserializes so a line reports every rule it breaks,
+/// not just the schema's share.
+fn typed_errors<T: DeserializeOwned>(
+    value: Value,
+    schema_failed: bool,
+    check: impl FnOnce(&T) -> Vec<String>,
+) -> Vec<String> {
+    match serde_json::from_value::<T>(value) {
+        Ok(record) => check(&record),
+        Err(err) if !schema_failed => vec![format!("record failed to deserialize: {err}")],
+        Err(_) => Vec::new(),
+    }
+}
+
 fn validate_line(line: &str, kind: RecordKind, validator: &jsonschema::Validator) -> Vec<String> {
     let value: Value = match serde_json::from_str(line) {
         Ok(value) => value,
@@ -156,26 +201,11 @@ fn validate_line(line: &str, kind: RecordKind, validator: &jsonschema::Validator
         .iter_errors(&value)
         .map(|err| err.to_string())
         .collect();
+    let schema_failed = !errors.is_empty();
 
-    // Cross-field rules need the typed record. Schema failures usually make
-    // deserialization fail too, but not always (e.g. maxItems has no Rust
-    // equivalent) — run the cross-field rules whenever the record deserializes
-    // so a line reports every rule it breaks, not just the schema's share.
-    match kind {
-        RecordKind::Sft => match serde_json::from_value::<SftRecord>(value) {
-            Ok(record) => errors.extend(sft_cross_field_errors(&record)),
-            Err(err) if errors.is_empty() => {
-                errors.push(format!("record failed to deserialize: {err}"));
-            }
-            Err(_) => {}
-        },
-        RecordKind::Dpo => match serde_json::from_value::<DpoPairRecord>(value) {
-            Ok(record) => errors.extend(dpo_cross_field_errors(&record)),
-            Err(err) if errors.is_empty() => {
-                errors.push(format!("record failed to deserialize: {err}"));
-            }
-            Err(_) => {}
-        },
-    }
+    errors.extend(match kind {
+        RecordKind::Sft => typed_errors(value, schema_failed, sft_cross_field_errors),
+        RecordKind::Dpo => typed_errors(value, schema_failed, dpo_cross_field_errors),
+    });
     errors
 }

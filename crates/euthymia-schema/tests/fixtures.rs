@@ -55,82 +55,29 @@ fn valid_dpo_fixtures_pass() {
     assert_passes("dpo", "valid_dpo.jsonl");
 }
 
-#[test]
-fn invalid_fixtures_fail_for_named_rules() {
-    let cases: &[(&str, &str, &str)] = &[
-        ("sft", "invalid_sft_bad_enum.jsonl", "estrangement"),
-        (
-            "sft",
-            "invalid_sft_unknown_field.jsonl",
-            "Additional properties are not allowed",
-        ),
-        (
-            "sft",
-            "invalid_sft_secondary_equals_primary.jsonl",
-            "secondary_competencies must not contain primary_competency",
-        ),
-        (
-            "sft",
-            "invalid_sft_missing_provenance.jsonl",
-            "\"provenance\" is a required property",
-        ),
-        (
-            "sft",
-            "invalid_sft_negative_without_expected_rejection.jsonl",
-            "negative fixture must carry expected_rejection",
-        ),
-        (
-            "sft",
-            "invalid_sft_wrong_schema_version.jsonl",
-            "1 was expected",
-        ),
-        (
-            "sft",
-            "invalid_sft_secondary_duplicate.jsonl",
-            "secondary_competencies must be unique",
-        ),
-        (
-            "sft",
-            "invalid_sft_too_many_secondaries.jsonl",
-            "has more than 2 items",
-        ),
-        (
-            "sft",
-            "invalid_sft_negative_admitted.jsonl",
-            "must never have verification.status = admitted",
-        ),
-        (
-            "sft",
-            "invalid_sft_secondary_outside_pool.jsonl",
-            "outside the FailureSetbacks pool",
-        ),
-        (
-            "sft",
-            "invalid_sft_family_code_mismatch.jsonl",
-            "does not match family",
-        ),
-        (
-            "sft",
-            "invalid_sft_impossible_date.jsonl",
-            "not a real calendar date",
-        ),
-        (
-            "sft",
-            "invalid_sft_primary_outside_pool.jsonl",
-            "outside the Jealousy pool",
-        ),
-        (
-            "sft",
-            "invalid_sft_duplicate_id.jsonl",
-            "duplicate eu-brk-001",
-        ),
-        (
-            "dpo",
-            "invalid_dpo_chosen_equals_rejected.jsonl",
-            "chosen and rejected must differ",
-        ),
-    ];
-    for (record, file, rule) in cases {
-        assert_fails_for(record, file, rule);
-    }
+/// Every invalid fixture file fails for its named rule (D10). One test per
+/// case so a regression names the rule it broke.
+macro_rules! invalid_fixture {
+    ($name:ident: $record:literal, $file:literal, $rule:literal) => {
+        #[test]
+        fn $name() {
+            assert_fails_for($record, $file, $rule);
+        }
+    };
 }
+
+invalid_fixture!(bad_enum: "sft", "invalid_sft_bad_enum.jsonl", "estrangement");
+invalid_fixture!(unknown_field: "sft", "invalid_sft_unknown_field.jsonl", "Additional properties are not allowed");
+invalid_fixture!(secondary_equals_primary: "sft", "invalid_sft_secondary_equals_primary.jsonl", "secondary_competencies must not contain primary_competency");
+invalid_fixture!(missing_provenance: "sft", "invalid_sft_missing_provenance.jsonl", "\"provenance\" is a required property");
+invalid_fixture!(negative_without_expected_rejection: "sft", "invalid_sft_negative_without_expected_rejection.jsonl", "negative fixture must carry expected_rejection");
+invalid_fixture!(wrong_schema_version: "sft", "invalid_sft_wrong_schema_version.jsonl", "1 was expected");
+invalid_fixture!(secondary_duplicate: "sft", "invalid_sft_secondary_duplicate.jsonl", "secondary_competencies must be unique");
+invalid_fixture!(too_many_secondaries: "sft", "invalid_sft_too_many_secondaries.jsonl", "has more than 2 items");
+invalid_fixture!(negative_admitted: "sft", "invalid_sft_negative_admitted.jsonl", "must never have verification.status = admitted");
+invalid_fixture!(secondary_outside_pool: "sft", "invalid_sft_secondary_outside_pool.jsonl", "outside the FailureSetbacks pool");
+invalid_fixture!(family_code_mismatch: "sft", "invalid_sft_family_code_mismatch.jsonl", "does not match family");
+invalid_fixture!(impossible_date: "sft", "invalid_sft_impossible_date.jsonl", "not a real calendar date");
+invalid_fixture!(primary_outside_pool: "sft", "invalid_sft_primary_outside_pool.jsonl", "outside the Jealousy pool");
+invalid_fixture!(duplicate_id: "sft", "invalid_sft_duplicate_id.jsonl", "duplicate eu-brk-001");
+invalid_fixture!(chosen_equals_rejected: "dpo", "invalid_dpo_chosen_equals_rejected.jsonl", "chosen and rejected must differ");

@@ -89,6 +89,11 @@ fn checked_in_schemas_assert_real_dates() {
             validator.is_valid(&record),
             "{schema_file} must accept verified_at: null"
         );
+        record["verification"] = json!({"status": "admitted", "verified_at": "2026-01-16"});
+        assert!(
+            validator.is_valid(&record),
+            "{schema_file} must accept a real verified_at"
+        );
         record["verification"] = json!({"status": "admitted", "verified_at": "2026-02-30"});
         assert!(
             !validator.is_valid(&record),

@@ -1,0 +1,296 @@
+{
+  "$defs": {
+    "Competency": {
+      "description": "The six competencies — contract §1 Six Competencies @ V0.1.0.",
+      "enum": [
+        "emotional_awareness",
+        "cognitive_discipline",
+        "personal_accountability",
+        "behavioral_control",
+        "healthy_boundaries",
+        "long_term_resilience"
+      ],
+      "type": "string"
+    },
+    "CriticalFailure": {
+      "description": "Critical failure — contract §3 Critical Failures @ V0.1.0. Hard rejects.",
+      "oneOf": [
+        {
+          "const": "revenge_or_harassment",
+          "description": "§3.1 Revenge or Harassment",
+          "type": "string"
+        },
+        {
+          "const": "shame_based_discipline",
+          "description": "§3.2 Shame-Based Discipline",
+          "type": "string"
+        },
+        {
+          "const": "enabling_substance_use",
+          "description": "§3.3 Enabling Substance Use in Recovery",
+          "type": "string"
+        },
+        {
+          "const": "fostering_ai_dependence",
+          "description": "§3.4 Fostering AI Dependence",
+          "type": "string"
+        }
+      ]
+    },
+    "Difficulty": {
+      "description": "Scenario difficulty — taxonomy \"Difficulty quotas\" (#12).",
+      "enum": [
+        "everyday",
+        "moderate",
+        "acute"
+      ],
+      "type": "string"
+    },
+    "Family": {
+      "description": "Scenario family — taxonomy \"Scenario families\" (#12).",
+      "enum": [
+        "breakups",
+        "anger",
+        "discipline_motivation",
+        "recovery",
+        "jealousy",
+        "boundaries",
+        "failure_setbacks"
+      ],
+      "type": "string"
+    },
+    "GeneratorKind": {
+      "description": "Who or what produced the record — `Provenance::generator_kind` (D6).",
+      "enum": [
+        "procedural",
+        "teacher",
+        "human"
+      ],
+      "type": "string"
+    },
+    "LifeStage": {
+      "description": "Persona axis — taxonomy \"Persona and setting axes\" (#12).",
+      "enum": [
+        "age_18_24",
+        "age_25_34",
+        "age_35_49",
+        "age_50_plus"
+      ],
+      "type": "string"
+    },
+    "Provenance": {
+      "additionalProperties": false,
+      "description": "Where a record came from (D6).",
+      "properties": {
+        "generated_at": {
+          "description": "ISO date (`YYYY-MM-DD`).",
+          "format": "date",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "type": "string"
+        },
+        "generator_id": {
+          "description": "Model name or template-set id.",
+          "type": "string"
+        },
+        "generator_kind": {
+          "$ref": "#/$defs/GeneratorKind"
+        },
+        "prompt_version": {
+          "type": "string"
+        },
+        "seed": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "generator_kind",
+        "generator_id",
+        "prompt_version",
+        "generated_at"
+      ],
+      "type": "object"
+    },
+    "RelationshipContext": {
+      "description": "Persona axis — taxonomy \"Persona and setting axes\" (#12). Generalized\nroles only, per contract §4.2.",
+      "enum": [
+        "partner",
+        "ex_partner",
+        "friend",
+        "family_member",
+        "coworker",
+        "authority_figure",
+        "self"
+      ],
+      "type": "string"
+    },
+    "Setting": {
+      "description": "Persona axis — taxonomy \"Persona and setting axes\" (#12).",
+      "enum": [
+        "home",
+        "work",
+        "social",
+        "online",
+        "public"
+      ],
+      "type": "string"
+    },
+    "VerificationResult": {
+      "additionalProperties": false,
+      "description": "Shape of a verification result (D6). This schema carries the shape only —\nscoring logic is issue #17.",
+      "properties": {
+        "critical_failure": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CriticalFailure"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "privacy_pass": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "rubric_score": {
+          "format": "uint8",
+          "maximum": 5,
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/VerificationStatus"
+        },
+        "verified_at": {
+          "description": "ISO date (`YYYY-MM-DD`).",
+          "format": "date",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "verified_by": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "status"
+      ],
+      "type": "object"
+    },
+    "VerificationStatus": {
+      "description": "Verification outcome — `VerificationResult::status` (D6).",
+      "enum": [
+        "pending",
+        "admitted",
+        "rejected"
+      ],
+      "type": "string"
+    }
+  },
+  "$id": "https://github.com/rmems/euthymia/blob/main/schemas/sft_record.v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "One SFT training row (D4).",
+  "properties": {
+    "contract_version": {
+      "const": "V0.1.0"
+    },
+    "difficulty": {
+      "$ref": "#/$defs/Difficulty"
+    },
+    "expected_rejection": {
+      "description": "The rule expected to reject this record; present iff\n`is_negative_fixture` is true (D7). Enforced as a cross-field rule.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "family": {
+      "$ref": "#/$defs/Family"
+    },
+    "is_negative_fixture": {
+      "description": "§3 negative-fixture label — the only permitted carrier of a critical\nfailure, machine-readable end-to-end (D7).",
+      "type": "boolean"
+    },
+    "life_stage": {
+      "$ref": "#/$defs/LifeStage"
+    },
+    "primary_competency": {
+      "$ref": "#/$defs/Competency"
+    },
+    "provenance": {
+      "$ref": "#/$defs/Provenance"
+    },
+    "relationship_context": {
+      "$ref": "#/$defs/RelationshipContext"
+    },
+    "response": {
+      "type": "string"
+    },
+    "scenario_id": {
+      "pattern": "^eu-(brk|ang|dis|rec|jel|bnd|fal)-[0-9]{3}$",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "secondary_competencies": {
+      "description": "Zero to two competencies; must be unique and never equal the primary.\nJSON Schema enforces the cap; uniqueness and ≠ primary are cross-field\nrules checked by `euthymia-validate` (D9).",
+      "items": {
+        "$ref": "#/$defs/Competency"
+      },
+      "maxItems": 2,
+      "type": "array"
+    },
+    "setting": {
+      "$ref": "#/$defs/Setting"
+    },
+    "user_message": {
+      "type": "string"
+    },
+    "verification": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/VerificationResult"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Null until verification (#17) runs."
+    }
+  },
+  "required": [
+    "schema_version",
+    "scenario_id",
+    "family",
+    "primary_competency",
+    "secondary_competencies",
+    "difficulty",
+    "life_stage",
+    "relationship_context",
+    "setting",
+    "user_message",
+    "response",
+    "provenance",
+    "contract_version",
+    "is_negative_fixture"
+  ],
+  "title": "SftRecord",
+  "type": "object"
+}

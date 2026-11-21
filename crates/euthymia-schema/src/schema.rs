@@ -19,39 +19,30 @@ fn schema_id(file: &str) -> String {
     format!("https://github.com/rmems/euthymia/blob/main/schemas/{file}")
 }
 
-fn with_id(schema: impl Into<Value>, file: &str) -> Value {
-    let mut value = schema.into();
-    value
+/// Render the full JSON Schema document for a record type at
+/// [`CURRENT_SCHEMA_VERSION`], `$id` included. The checked-in filename must
+/// carry the current version.
+fn record_schema<T: schemars::JsonSchema>(file: &str) -> Value {
+    assert!(
+        file.contains(&format!(".v{CURRENT_SCHEMA_VERSION}.")),
+        "bump the schema filename with the version"
+    );
+    let mut schema = serde_json::to_value(schema_for!(T)).expect("schema serializes");
+    schema
         .as_object_mut()
         .expect("root schema is an object")
         .insert("$id".into(), json!(schema_id(file)));
-    value
+    schema
 }
 
-/// The full JSON Schema document for [`SftRecord`] at
-/// [`CURRENT_SCHEMA_VERSION`], `$id` included.
+/// The full JSON Schema document for [`SftRecord`].
 pub fn sft_record_schema() -> Value {
-    assert_eq!(
-        CURRENT_SCHEMA_VERSION, 1,
-        "bump SFT_SCHEMA_FILE with the version"
-    );
-    with_id(
-        serde_json::to_value(schema_for!(SftRecord)).expect("schema serializes"),
-        SFT_SCHEMA_FILE,
-    )
+    record_schema::<SftRecord>(SFT_SCHEMA_FILE)
 }
 
-/// The full JSON Schema document for [`DpoPairRecord`] at
-/// [`CURRENT_SCHEMA_VERSION`], `$id` included.
+/// The full JSON Schema document for [`DpoPairRecord`].
 pub fn dpo_pair_schema() -> Value {
-    assert_eq!(
-        CURRENT_SCHEMA_VERSION, 1,
-        "bump DPO_SCHEMA_FILE with the version"
-    );
-    with_id(
-        serde_json::to_value(schema_for!(DpoPairRecord)).expect("schema serializes"),
-        DPO_SCHEMA_FILE,
-    )
+    record_schema::<DpoPairRecord>(DPO_SCHEMA_FILE)
 }
 
 /// Canonical checked-in rendering: pretty JSON, trailing newline.

@@ -85,6 +85,36 @@ fn invalid_fixtures_fail_for_named_rules() {
             "1 was expected",
         ),
         (
+            "sft",
+            "invalid_sft_secondary_duplicate.jsonl",
+            "secondary_competencies must be unique",
+        ),
+        (
+            "sft",
+            "invalid_sft_too_many_secondaries.jsonl",
+            "has more than 2 items",
+        ),
+        (
+            "sft",
+            "invalid_sft_negative_admitted.jsonl",
+            "must never have verification.status = admitted",
+        ),
+        (
+            "sft",
+            "invalid_sft_secondary_outside_pool.jsonl",
+            "outside the FailureSetbacks pool",
+        ),
+        (
+            "sft",
+            "invalid_sft_family_code_mismatch.jsonl",
+            "does not match family",
+        ),
+        (
+            "sft",
+            "invalid_sft_impossible_date.jsonl",
+            "not a real calendar date",
+        ),
+        (
             "dpo",
             "invalid_dpo_chosen_equals_rejected.jsonl",
             "chosen and rejected must differ",

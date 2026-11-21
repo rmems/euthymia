@@ -27,6 +27,32 @@ pub const PAIR_ID_PATTERN: &str = r"^eu-dpo-[0-9]{3}$";
 /// ISO calendar date (`YYYY-MM-DD`) for provenance/verification timestamps.
 const ISO_DATE_PATTERN: &str = r"^\d{4}-\d{2}-\d{2}$";
 
+/// Deserialize a field that is pinned to one exact value: any other value
+/// fails to deserialize (D2's rule, shared by the version newtypes).
+fn deserialize_pinned<'de, D, T>(
+    deserializer: D,
+    expected: T,
+    field: &'static str,
+) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de> + PartialEq + std::fmt::Debug,
+{
+    let value = T::deserialize(deserializer)?;
+    if value == expected {
+        Ok(value)
+    } else {
+        Err(D::Error::custom(format!(
+            "unsupported {field} {value:?}; expected {expected:?}"
+        )))
+    }
+}
+
+/// Render the `{"const": <value>}` schema the version newtypes share.
+fn const_schema(value: serde_json::Value) -> Schema {
+    value.as_object().expect("object literal").clone().into()
+}
+
 /// `schema_version` field: serializes as [`CURRENT_SCHEMA_VERSION`], rejects
 /// every other value on deserialize, and appears as `{"const": 1}` in the
 /// generated schema (D2). A newtype so an out-of-version record cannot be
@@ -49,14 +75,7 @@ impl Serialize for SchemaVersion {
 
 impl<'de> Deserialize<'de> for SchemaVersion {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let value = u32::deserialize(deserializer)?;
-        if value == CURRENT_SCHEMA_VERSION {
-            Ok(Self)
-        } else {
-            Err(D::Error::custom(format!(
-                "unsupported schema_version {value}; expected {CURRENT_SCHEMA_VERSION}"
-            )))
-        }
+        deserialize_pinned(deserializer, CURRENT_SCHEMA_VERSION, "schema_version").map(|_| Self)
     }
 }
 
@@ -66,11 +85,7 @@ impl JsonSchema for SchemaVersion {
     }
 
     fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
-        json!({ "const": CURRENT_SCHEMA_VERSION })
-            .as_object()
-            .expect("object literal")
-            .clone()
-            .into()
+        const_schema(json!({ "const": CURRENT_SCHEMA_VERSION }))
     }
 
     fn inline_schema() -> bool {
@@ -98,14 +113,12 @@ impl Serialize for ContractVersion {
 
 impl<'de> Deserialize<'de> for ContractVersion {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let value = String::deserialize(deserializer)?;
-        if value == CONTRACT_VERSION {
-            Ok(Self)
-        } else {
-            Err(D::Error::custom(format!(
-                "unsupported contract_version {value:?}; expected {CONTRACT_VERSION:?}"
-            )))
-        }
+        deserialize_pinned(
+            deserializer,
+            CONTRACT_VERSION.to_string(),
+            "contract_version",
+        )
+        .map(|_| Self)
     }
 }
 
@@ -115,11 +128,7 @@ impl JsonSchema for ContractVersion {
     }
 
     fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
-        json!({ "const": CONTRACT_VERSION })
-            .as_object()
-            .expect("object literal")
-            .clone()
-            .into()
+        const_schema(json!({ "const": CONTRACT_VERSION }))
     }
 
     fn inline_schema() -> bool {

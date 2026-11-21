@@ -86,8 +86,15 @@ fn validate_file(
     kind: RecordKind,
     validator: &jsonschema::Validator,
 ) -> Result<usize> {
-    let text =
-        fs::read_to_string(path).with_context(|| format!("cannot read {}", path.display()))?;
+    // An unreadable or non-UTF-8 file is a validation failure, not a reason
+    // to stop the batch — remaining files still get their per-line report.
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(err) => {
+            eprintln!("{}: {err}", path.display());
+            return Ok(1);
+        }
+    };
     let mut failures = 0usize;
 
     for (index, line) in text.lines().enumerate() {

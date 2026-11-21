@@ -18,6 +18,56 @@ pub enum Family {
     FailureSetbacks,
 }
 
+impl Family {
+    /// The family code used inside `scenario_id` / `pair_id` values (D8).
+    pub fn id_code(self) -> &'static str {
+        match self {
+            Self::Breakups => "brk",
+            Self::Anger => "ang",
+            Self::DisciplineMotivation => "dis",
+            Self::Recovery => "rec",
+            Self::Jealousy => "jel",
+            Self::Boundaries => "bnd",
+            Self::FailureSetbacks => "fal",
+        }
+    }
+
+    /// The allowed secondary-competency pool for this family — taxonomy
+    /// "Secondary-competency pools" (#12). A record's secondaries must come
+    /// only from this pool and never equal the primary.
+    pub fn secondary_pool(self) -> &'static [Competency] {
+        match self {
+            Self::Breakups => &[
+                Competency::CognitiveDiscipline,
+                Competency::BehavioralControl,
+            ],
+            Self::Anger => &[
+                Competency::PersonalAccountability,
+                Competency::HealthyBoundaries,
+                Competency::LongTermResilience,
+            ],
+            Self::DisciplineMotivation => &[
+                Competency::EmotionalAwareness,
+                Competency::HealthyBoundaries,
+            ],
+            Self::Recovery => &[
+                Competency::CognitiveDiscipline,
+                Competency::HealthyBoundaries,
+            ],
+            Self::Jealousy => &[
+                Competency::PersonalAccountability,
+                Competency::BehavioralControl,
+                Competency::LongTermResilience,
+            ],
+            Self::Boundaries => &[
+                Competency::EmotionalAwareness,
+                Competency::LongTermResilience,
+            ],
+            Self::FailureSetbacks => &[Competency::HealthyBoundaries],
+        }
+    }
+}
+
 /// The six competencies — contract §1 Six Competencies @ V0.1.0.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]

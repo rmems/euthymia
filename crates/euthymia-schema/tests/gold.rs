@@ -7,7 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use euthymia_schema::{Competency, Family, SftRecord, VerificationStatus};
+use euthymia_schema::{Competency, Family, SftRecord, VerificationResult, VerificationStatus};
 
 const EA_ANCHOR: (&str, Competency) = ("eu-brk-901", Competency::EmotionalAwareness);
 const CD_ANCHOR: (&str, Competency) = ("eu-dis-902", Competency::CognitiveDiscipline);
@@ -66,6 +66,61 @@ fn load_sft(file: &str) -> Vec<SftRecord> {
         .collect()
 }
 
+fn verification(record: &SftRecord) -> &VerificationResult {
+    record
+        .verification
+        .as_ref()
+        .unwrap_or_else(|| panic!("{} must carry verification", record.scenario_id))
+}
+
+fn assert_accepted_metadata(record: &SftRecord) {
+    assert!(
+        !record.is_negative_fixture,
+        "{} must not be a negative fixture",
+        record.scenario_id
+    );
+    assert_eq!(
+        verification(record).status,
+        VerificationStatus::Admitted,
+        "{} must be admitted",
+        record.scenario_id
+    );
+}
+
+fn assert_negative_metadata(record: &SftRecord) {
+    assert!(
+        record.is_negative_fixture,
+        "{} must be labeled as a negative fixture",
+        record.scenario_id
+    );
+    let verification = verification(record);
+    assert_eq!(
+        verification.status,
+        VerificationStatus::Rejected,
+        "{} must be rejected",
+        record.scenario_id
+    );
+    assert!(
+        verification.critical_failure.is_some(),
+        "{} must record a critical_failure",
+        record.scenario_id
+    );
+    let expected_rejection = record
+        .expected_rejection
+        .as_deref()
+        .unwrap_or_else(|| panic!("{} must carry expected_rejection", record.scenario_id));
+    assert!(
+        expected_rejection.starts_with("§3."),
+        "{} expected_rejection should cite §3: {expected_rejection}",
+        record.scenario_id
+    );
+    assert!(
+        expected_rejection.ends_with("@ V0.1.0"),
+        "{} expected_rejection should end with @ V0.1.0: {expected_rejection}",
+        record.scenario_id
+    );
+}
+
 #[test]
 fn gold_files_validate_with_euthymia_validate() {
     let output = Command::new(env!("CARGO_BIN_EXE_euthymia-validate"))
@@ -76,7 +131,8 @@ fn gold_files_validate_with_euthymia_validate() {
         .expect("euthymia-validate runs");
     assert!(
         output.status.success(),
-        "gold files should validate, got:\n{}",
+        "gold files should validate, got:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
 }
@@ -89,21 +145,7 @@ fn accepted_and_negative_rows_carry_expected_verification_metadata() {
         "accepted gold file should not be empty"
     );
     for record in &accepted {
-        assert!(
-            !record.is_negative_fixture,
-            "{} must not be a negative fixture",
-            record.scenario_id
-        );
-        let verification = record
-            .verification
-            .as_ref()
-            .unwrap_or_else(|| panic!("{} must carry verification", record.scenario_id));
-        assert_eq!(
-            verification.status,
-            VerificationStatus::Admitted,
-            "{} must be admitted",
-            record.scenario_id
-        );
+        assert_accepted_metadata(record);
     }
 
     let negatives = load_sft("sft_gold_negative.jsonl");
@@ -123,45 +165,7 @@ fn accepted_and_negative_rows_carry_expected_verification_metadata() {
         );
     }
     for record in &negatives {
-        assert!(
-            record.is_negative_fixture,
-            "{} must be labeled as a negative fixture",
-            record.scenario_id
-        );
-        let verification = record
-            .verification
-            .as_ref()
-            .unwrap_or_else(|| panic!("{} must carry verification", record.scenario_id));
-        assert_eq!(
-            verification.status,
-            VerificationStatus::Rejected,
-            "{} must be rejected",
-            record.scenario_id
-        );
-        assert!(
-            verification.critical_failure.is_some(),
-            "{} must record a critical_failure",
-            record.scenario_id
-        );
-        let expected_rejection = record
-            .expected_rejection
-            .as_deref()
-            .unwrap_or_else(|| panic!("{} must carry expected_rejection", record.scenario_id));
-        assert!(
-            expected_rejection.starts_with('§'),
-            "{} expected_rejection should start with a section citation: {expected_rejection}",
-            record.scenario_id
-        );
-        assert!(
-            expected_rejection.starts_with("§3."),
-            "{} expected_rejection should cite §3: {expected_rejection}",
-            record.scenario_id
-        );
-        assert!(
-            expected_rejection.ends_with("@ V0.1.0"),
-            "{} expected_rejection should end with @ V0.1.0: {expected_rejection}",
-            record.scenario_id
-        );
+        assert_negative_metadata(record);
     }
 }
 
@@ -217,11 +221,16 @@ fn scenario_ids_are_unique_and_documented() {
         .chain(&negatives)
         .map(|record| record.scenario_id.as_str())
         .collect();
-    let unique_ids: HashSet<_> = all_ids.iter().copied().collect();
-    assert_eq!(
-        unique_ids.len(),
-        all_ids.len(),
-        "scenario_id values must be unique across both gold files"
+    let mut seen = HashSet::new();
+    let mut duplicates = Vec::new();
+    for id in &all_ids {
+        if !seen.insert(*id) {
+            duplicates.push(*id);
+        }
+    }
+    assert!(
+        duplicates.is_empty(),
+        "duplicate scenario_id values across both gold files: {duplicates:?}"
     );
 
     let notes_path = gold_file("REVIEW_NOTES.md");

@@ -74,6 +74,7 @@ invalid_fixture!(unknown_field: "sft", "invalid_sft_unknown_field.jsonl", "Addit
 invalid_fixture!(secondary_equals_primary: "sft", "invalid_sft_secondary_equals_primary.jsonl", "secondary_competencies must not contain primary_competency");
 invalid_fixture!(missing_provenance: "sft", "invalid_sft_missing_provenance.jsonl", "\"provenance\" is a required property");
 invalid_fixture!(negative_without_expected_rejection: "sft", "invalid_sft_negative_without_expected_rejection.jsonl", "negative fixture must carry expected_rejection");
+invalid_fixture!(unrecognized_expected_rejection: "sft", "invalid_sft_unrecognized_expected_rejection.jsonl", "not one of the four exact §3 citations");
 invalid_fixture!(wrong_schema_version: "sft", "invalid_sft_wrong_schema_version.jsonl", "1 was expected");
 invalid_fixture!(secondary_duplicate: "sft", "invalid_sft_secondary_duplicate.jsonl", "secondary_competencies must be unique");
 invalid_fixture!(too_many_secondaries: "sft", "invalid_sft_too_many_secondaries.jsonl", "has more than 2 items");

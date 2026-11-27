@@ -46,11 +46,15 @@ Cargo.toml   Rust workspace root — all pipeline code is Rust
 `data/gold/sft_gold.jsonl` holds the accepted calibration rows,
 `data/gold/sft_gold_negative.jsonl` holds machine-labeled §3 negative fixtures,
 and `data/gold/REVIEW_NOTES.md` is the row-by-row contract review and index.
-Validate both gold files together with:
+The gold rows are pending human review while `PENDING_HUMAN_REVIEW` remains in
+their verification metadata. Validate both gold files together with:
 
 ```sh
 cargo run -p euthymia-schema --bin euthymia-validate -- sft data/gold/sft_gold.jsonl data/gold/sft_gold_negative.jsonl
 ```
+
+This validator command checks schema and structural consistency only; it does
+not complete human review or behaviorally approve the responses.
 
 ## Data flow
 

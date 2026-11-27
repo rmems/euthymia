@@ -68,6 +68,20 @@ fn positive_record_serializes_without_expected_rejection_key() {
 }
 
 #[test]
+fn rejected_record_may_carry_critical_failure_diagnostic() {
+    let mut record = base_sft();
+    record.verification = Some(VerificationResult {
+        status: VerificationStatus::Rejected,
+        rubric_score: None,
+        critical_failure: Some(CriticalFailure::FosteringAiDependence),
+        privacy_pass: Some(true),
+        verified_by: Some("admission-test".to_string()),
+        verified_at: Some("2026-11-27".to_string()),
+    });
+    assert_eq!(sft_cross_field_errors(&record), Vec::<String>::new());
+}
+
+#[test]
 fn schema_version_two_fails_to_deserialize() {
     let mut value = serde_json::to_value(base_sft()).expect("serializes");
     value["schema_version"] = json!(2);

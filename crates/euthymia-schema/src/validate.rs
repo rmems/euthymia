@@ -8,9 +8,8 @@ use crate::enums::{Competency, Family, VerificationStatus};
 use crate::records::{DpoPairRecord, Provenance, SftRecord, VerificationResult};
 
 /// §3 legs shared by both record types: a labeled negative fixture must
-/// never be admitted, and a recorded critical failure is only coherent on a
-/// labeled negative fixture — a critical failure on an ordinary record is a
-/// hard reject, not a valid datum.
+/// never be admitted, and a recorded critical failure is coherent only on a
+/// rejected record. Admitted or pending records must never carry one.
 fn critical_failure_errors(
     is_negative_fixture: bool,
     verification: Option<&VerificationResult>,
@@ -23,9 +22,9 @@ fn critical_failure_errors(
                     .to_string(),
             );
         }
-        if !is_negative_fixture && v.critical_failure.is_some() {
+        if v.critical_failure.is_some() && v.status != VerificationStatus::Rejected {
             errors.push(
-                "verification.critical_failure may only be recorded on a labeled negative fixture (contract §3)"
+                "verification.critical_failure may only be recorded when verification.status = rejected (contract §3)"
                     .to_string(),
             );
         }

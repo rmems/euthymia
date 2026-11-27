@@ -36,7 +36,7 @@ data/gold/       Contract calibration exemplar rows (gold seed set; human
                  and REVIEW_NOTES.md
 data/raw/        Raw teacher-model outputs — local only, gitignored
 data/admitted/   Records that passed verification
-data/rejected/   Records that failed verification (labeled negative fixtures)
+data/rejected/   Records that failed verification (diagnostic audit artifacts)
 schemas/     Record schemas — SFT JSONL + DPO preference pairs
 eval/        Eval harness — held-out scenarios, rubric scoring, critical-failure gate
 scripts/     Pipeline scripts and tooling
@@ -56,10 +56,46 @@ cargo run -p euthymia-schema --bin euthymia-validate -- sft data/gold/sft_gold.j
 This validator command checks schema and structural consistency only; it does
 not complete human review or behaviorally approve the responses.
 
+## Verification and admission
+
+`euthymia-admit` is the deterministic gate between raw candidates and admitted
+data. It reuses the same validator implementation as `euthymia-validate`, then
+applies the privacy screen, the §3 critical-failure screen, and file-based
+rubric scores through the `Scorer` interface. Incoming verification metadata is
+ignored and every verdict is re-derived.
+
+```sh
+cargo run -p euthymia-verify --bin euthymia-admit -- \
+  --scores path/to/scores.jsonl \
+  --batch batch-name \
+  --output-root data \
+  data/raw/candidates.jsonl
+```
+
+The score file is JSONL keyed by `scenario_id`:
+
+```json
+{"scenario_id":"eu-brk-001","score":5,"critical_failure":null,"scorer_id":"reviewing-agent-v1","rationale":"one-line rationale"}
+```
+
+Rows admit only when they are schema-valid, privacy-passing, free of critical
+failures, and scored at least 4. Admitted rows are written to
+`data/admitted/<batch>.jsonl`; rejected rows are written to
+`data/rejected/<batch>.jsonl` when they are representable as records. The
+machine-readable `data/admission_report.json` records per-row verdicts, the
+firing rule, contract sections evaluated, per-rule counts, and sha256 hashes of
+all candidate input files and the score file. Rejected output is diagnostic audit data,
+never training positive data.
+
+The report's rejection-rule vocabulary is `schema_invalid`,
+`privacy_violation`, `rubric_below_threshold`, and the four §3 critical-failure
+IDs. Negative fixtures continue to use exact contract citations in
+`expected_rejection`; those citations are labels for calibration, not the
+admission report's internal rule IDs.
+
 ## Data flow
 
-The pipeline is scaffolded but not yet implemented — each stage lands via its
-own issue. The intended flow:
+The pipeline is landing stage by stage. The intended flow:
 
 ```
 contract → taxonomy → generation → verification → assembly → Hugging Face
@@ -73,7 +109,7 @@ contract → taxonomy → generation → verification → assembly → Hugging F
 3. **Generation** — SFT records and DPO preference pairs are generated against
    the taxonomy (procedural + teacher generation). *(planned)*
 4. **Verification** — rubric scoring, critical-failure screen (§3), and
-   privacy screen (§4); records are admitted or rejected. *(planned)*
+   privacy screen (§4); records are admitted or rejected. *(landed)*
 5. **Assembly** — admitted records are deduplicated, split, and packaged with
    per-competency counts and a dataset card. *(planned)*
 6. **Hugging Face** — the assembled dataset is published to the Hugging Face

@@ -156,15 +156,28 @@ fn shared_errors(view: &SharedView<'_>) -> Vec<String> {
     errors
 }
 
-/// A labeled negative fixture must name the rule expected to reject it
-/// (D7); an empty citation is not a label, and the field is meaningless on
-/// a positive record.
+/// §3 citations accepted as `expected_rejection` labels on negative
+/// fixtures. These are contract citations, not internal admission rule IDs;
+/// the admission pipeline reports machine-readable rule IDs separately.
+pub const EXPECTED_REJECTION_CITATIONS: [&str; 4] = [
+    "§3.1 Revenge or Harassment @ V0.1.0",
+    "§3.2 Shame-Based Discipline @ V0.1.0",
+    "§3.3 Enabling Substance Use in Recovery @ V0.1.0",
+    "§3.4 Fostering AI Dependence @ V0.1.0",
+];
+
+/// A labeled negative fixture must name the §3 rule expected to reject it
+/// (D7); an empty or unrecognized citation is not a label, and the field is
+/// meaningless on a positive record.
 fn expected_rejection_error(record: &SftRecord) -> Option<String> {
     match record.expected_rejection.as_deref().map(str::trim) {
         _ if !record.is_negative_fixture => record.expected_rejection.is_some().then(|| {
             "expected_rejection may only be present on a labeled negative fixture".to_string()
         }),
-        Some(citation) if !citation.is_empty() => None,
+        Some(citation) if EXPECTED_REJECTION_CITATIONS.contains(&citation) => None,
+        Some(citation) if !citation.is_empty() => Some(format!(
+            "expected_rejection {citation:?} is not one of the four exact §3 citations"
+        )),
         Some(_) => {
             Some("negative fixture must carry a non-empty expected_rejection citation".to_string())
         }

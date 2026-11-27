@@ -11,6 +11,7 @@ pub mod enums;
 pub mod records;
 pub mod schema;
 pub mod validate;
+pub mod validator;
 
 pub use enums::*;
 pub use records::*;

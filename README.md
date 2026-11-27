@@ -75,8 +75,12 @@ cargo run -p euthymia-verify --bin euthymia-admit -- \
 The score file is JSONL keyed by `scenario_id`:
 
 ```json
-{"scenario_id":"eu-brk-001","score":5,"critical_failure":null,"scorer_id":"reviewing-agent-v1","rationale":"one-line rationale"}
+{"scenario_id":"eu-brk-001","content_sha256":"<sha256 of exact candidate JSONL line>","score":5,"critical_failure":null,"scorer_id":"reviewing-agent-v1","rationale":"one-line rationale"}
 ```
+
+`content_sha256` is required and must hash the exact candidate JSONL line bytes
+(excluding the line ending). If a candidate is edited after scoring, the hash no
+longer matches and the row fails closed instead of reusing a stale review.
 
 Rows admit only when they are schema-valid, privacy-passing, free of critical
 failures, and scored at least 4. Admitted rows are written to
@@ -84,8 +88,8 @@ failures, and scored at least 4. Admitted rows are written to
 `data/rejected/<batch>.jsonl` when they are representable as records. The
 machine-readable `data/admission_report.json` records per-row verdicts, the
 firing rule, contract sections evaluated, per-rule counts, and sha256 hashes of
-all candidate input files and the score file. Rejected output is diagnostic audit data,
-never training positive data.
+all candidate input files and the score file. Rejected output is diagnostic
+audit data, never training positive data.
 
 The report's rejection-rule vocabulary is `schema_invalid`,
 `privacy_violation`, `rubric_below_threshold`, and the four §3 critical-failure

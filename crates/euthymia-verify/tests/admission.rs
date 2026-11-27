@@ -6,6 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use euthymia_verify::admission_content_sha256;
 use serde_json::{Value, json};
 
 fn workspace_root() -> PathBuf {
@@ -49,9 +50,11 @@ fn read_jsonl(path: &Path) -> Vec<Value> {
         .collect()
 }
 
-fn score_line(id: &str, score: u8, critical_failure: Option<&str>) -> String {
+fn score_line(row_line: &str, score: u8, critical_failure: Option<&str>) -> String {
+    let row: Value = serde_json::from_str(row_line).expect("candidate row parses");
     json!({
-        "scenario_id": id,
+        "scenario_id": row["scenario_id"].as_str().expect("scenario id"),
+        "content_sha256": admission_content_sha256(row_line),
         "score": score,
         "critical_failure": critical_failure,
         "scorer_id": "integration-review",
@@ -60,26 +63,34 @@ fn score_line(id: &str, score: u8, critical_failure: Option<&str>) -> String {
     .to_string()
 }
 
-fn write_lines(path: &Path, lines: &[String]) {
-    fs::write(path, lines.join("\n") + "\n").expect("jsonl writes");
+fn stale_score_line(row_line: &str) -> String {
+    let mut entry: Value =
+        serde_json::from_str(&score_line(row_line, 5, None)).expect("score entry parses");
+    entry["content_sha256"] = json!("0".repeat(64));
+    entry.to_string()
 }
 
-fn ids_in_file(path: &Path) -> Vec<String> {
-    read_jsonl(path)
-        .iter()
-        .map(|row| {
-            row["scenario_id"]
-                .as_str()
-                .expect("scenario id")
-                .to_string()
-        })
+fn nonempty_lines(path: &Path) -> Vec<String> {
+    fs::read_to_string(path)
+        .expect("jsonl reads")
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(str::to_string)
         .collect()
+}
+
+fn write_lines(path: &Path, lines: &[String]) {
+    fs::write(path, lines.join("\n") + "\n").expect("jsonl writes");
 }
 
 fn write_gold_scores(temp: &Path, positive: &Path, negative: &Path) -> PathBuf {
     let mut lines = Vec::new();
     for file in [positive, negative] {
-        lines.extend(ids_in_file(file).iter().map(|id| score_line(id, 5, None)));
+        lines.extend(
+            nonempty_lines(file)
+                .iter()
+                .map(|line| score_line(line, 5, None)),
+        );
     }
     let scores = temp.join("scores.jsonl");
     write_lines(&scores, &lines);
@@ -234,6 +245,7 @@ fn synthetic_rows() -> Vec<Value> {
         row_with_id("eu-brk-105"),
         row_with_id("eu-brk-106"),
         stale_verification,
+        row_with_id("eu-brk-108"),
     ]
 }
 
@@ -244,17 +256,22 @@ fn write_synthetic_batch(temp: &Path) -> PathBuf {
     batch
 }
 
-fn write_synthetic_scores(temp: &Path) -> PathBuf {
+fn write_synthetic_scores(temp: &Path, batch: &Path) -> PathBuf {
+    let rows = nonempty_lines(batch);
+    let by_id = |id: &str| {
+        rows.iter()
+            .find(|line| line.contains(&format!("\"scenario_id\":\"{id}\"")))
+            .expect("synthetic row exists")
+    };
+    let lines = [
+        score_line(by_id("eu-brk-104"), 2, None),
+        score_line(by_id("eu-brk-105"), 5, Some("fostering_ai_dependence")),
+        score_line(by_id("eu-brk-106"), 5, None),
+        score_line(by_id("eu-brk-107"), 5, None),
+        stale_score_line(by_id("eu-brk-108")),
+    ];
     let scores = temp.join("scores.jsonl");
-    write_lines(
-        &scores,
-        &[
-            score_line("eu-brk-104", 2, None),
-            score_line("eu-brk-105", 5, Some("fostering_ai_dependence")),
-            score_line("eu-brk-106", 5, None),
-            score_line("eu-brk-107", 5, None),
-        ],
-    );
+    write_lines(&scores, &lines);
     scores
 }
 
@@ -271,12 +288,19 @@ fn assert_synthetic_rows(rows: &Value) {
     );
     assert_eq!(rows["eu-brk-106"]["verdict"], "admitted");
     assert_eq!(rows["eu-brk-107"]["verdict"], "admitted");
+    assert_eq!(rows["eu-brk-108"]["rule"], "rubric_below_threshold");
+    assert!(
+        rows["eu-brk-108"]["detail"]
+            .as_str()
+            .expect("detail string")
+            .contains("stale score")
+    );
 }
 
 fn assert_synthetic_counts(report: &Value) {
     assert_eq!(report["counts"]["per_rule"]["schema_invalid"], 1);
     assert_eq!(report["counts"]["per_rule"]["privacy_violation"], 1);
-    assert_eq!(report["counts"]["per_rule"]["rubric_below_threshold"], 2);
+    assert_eq!(report["counts"]["per_rule"]["rubric_below_threshold"], 3);
     assert_eq!(report["counts"]["per_rule"]["fostering_ai_dependence"], 1);
 }
 
@@ -284,7 +308,7 @@ fn assert_synthetic_counts(report: &Value) {
 fn synthetic_batch_exercises_every_non_lexical_reject_path() {
     let temp = test_dir("synthetic-rules");
     let batch = write_synthetic_batch(&temp);
-    let scores = write_synthetic_scores(&temp);
+    let scores = write_synthetic_scores(&temp, &batch);
     let args = admit_args(&scores, "synthetic", &temp, &[&batch]);
     assert_success(&run_admit(&args));
 

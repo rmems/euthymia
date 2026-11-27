@@ -88,6 +88,9 @@ impl AdmissionRule {
 #[serde(deny_unknown_fields)]
 pub struct ScoreEntry {
     pub scenario_id: String,
+    /// SHA-256 hex of the exact JSONL line this score reviewed, excluding the
+    /// trailing newline. This prevents a stale score from approving edited content.
+    pub content_sha256: String,
     pub score: u8,
     #[serde(default)]
     pub critical_failure: Option<CriticalFailure>,
@@ -134,6 +137,13 @@ impl FileScorer {
             ensure!(
                 (1..=5).contains(&entry.score),
                 "{}:{}: score must be in 1..=5",
+                path.display(),
+                index + 1
+            );
+            ensure!(
+                entry.content_sha256.len() == 64
+                    && entry.content_sha256.chars().all(|c| c.is_ascii_hexdigit()),
+                "{}:{}: content_sha256 must be lowercase-or-uppercase sha256 hex",
                 path.display(),
                 index + 1
             );
@@ -265,6 +275,12 @@ fn sha256_bytes(bytes: &[u8]) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+/// Hash the exact candidate JSONL line a score reviewed, excluding the line
+/// ending. Scores are valid only for this exact bytes-level content.
+pub fn admission_content_sha256(line: &str) -> String {
+    sha256_bytes(line.as_bytes())
 }
 
 fn read_input_file(path: &Path) -> Result<(InputFileReport, Vec<BatchLine>)> {
@@ -804,6 +820,15 @@ fn unscored_rejection(run_date: &str) -> RejectSpec {
     )
 }
 
+fn stale_score_rejection(run_date: &str) -> RejectSpec {
+    RejectSpec::gate(
+        AdmissionRule::RubricBelowThreshold,
+        "stale score: content_sha256 does not match candidate line".to_string(),
+        Some(true),
+        run_date,
+    )
+}
+
 fn score_rejection(score: &ScoreEntry, run_date: &str) -> Option<RejectSpec> {
     if let Some(failure) = score.critical_failure {
         let rule = AdmissionRule::from_critical_failure(failure);
@@ -863,10 +888,18 @@ fn parse_valid_record(row: &BatchLine) -> Result<SftRecord, String> {
     serde_json::from_str(&row.line).map_err(|err| format!("record failed to deserialize: {err}"))
 }
 
-fn score_decision(record: SftRecord, scorer: &impl Scorer, run_date: &str) -> Decision {
+fn score_decision(
+    row: &BatchLine,
+    record: SftRecord,
+    scorer: &impl Scorer,
+    run_date: &str,
+) -> Decision {
     let Some(score) = scorer.score(&record.scenario_id) else {
         return reject(record, unscored_rejection(run_date), run_date);
     };
+    if score.content_sha256 != admission_content_sha256(&row.line) {
+        return reject(record, stale_score_rejection(run_date), run_date);
+    }
     if let Some(spec) = score_rejection(score, run_date) {
         return reject(record, spec, run_date);
     }
@@ -894,7 +927,7 @@ fn decide_row(
     if let Some(spec) = pre_score_rejection(&record, run_date) {
         return reject(record, spec, run_date);
     }
-    score_decision(record, scorer, run_date)
+    score_decision(row, record, scorer, run_date)
 }
 
 fn write_jsonl(path: &Path, records: &[SftRecord]) -> Result<()> {

@@ -31,7 +31,9 @@ contract/    Behavioral contract — the canonical rules every artifact answers 
              (contract/BEHAVIORAL_CONTRACT.md)
 taxonomy/    Scenario taxonomy and coverage matrix
 data/        Dataset artifacts
-data/gold/       Hand-reviewed exemplar rows (gold seed set)
+data/gold/       Contract calibration exemplar rows (gold seed set; human
+                 review pending): sft_gold.jsonl, sft_gold_negative.jsonl,
+                 and REVIEW_NOTES.md
 data/raw/        Raw teacher-model outputs — local only, gitignored
 data/admitted/   Records that passed verification
 data/rejected/   Records that failed verification (labeled negative fixtures)
@@ -40,6 +42,19 @@ eval/        Eval harness — held-out scenarios, rubric scoring, critical-failu
 scripts/     Pipeline scripts and tooling
 Cargo.toml   Rust workspace root — all pipeline code is Rust
 ```
+
+`data/gold/sft_gold.jsonl` holds the accepted calibration rows,
+`data/gold/sft_gold_negative.jsonl` holds machine-labeled §3 negative fixtures,
+and `data/gold/REVIEW_NOTES.md` is the row-by-row contract review and index.
+The gold rows are pending human review while `PENDING_HUMAN_REVIEW` remains in
+their verification metadata. Validate both gold files together with:
+
+```sh
+cargo run -p euthymia-schema --bin euthymia-validate -- sft data/gold/sft_gold.jsonl data/gold/sft_gold_negative.jsonl
+```
+
+This validator command checks schema and structural consistency only; it does
+not complete human review or behaviorally approve the responses.
 
 ## Data flow
 

@@ -31,7 +31,8 @@ contract/    Behavioral contract — the canonical rules every artifact answers 
              (contract/BEHAVIORAL_CONTRACT.md)
 taxonomy/    Scenario taxonomy and coverage matrix
 data/        Dataset artifacts
-data/gold/       Hand-reviewed exemplar rows (gold seed set)
+data/gold/       Hand-reviewed exemplar rows (gold seed set): sft_gold.jsonl,
+                 sft_gold_negative.jsonl, and REVIEW_NOTES.md
 data/raw/        Raw teacher-model outputs — local only, gitignored
 data/admitted/   Records that passed verification
 data/rejected/   Records that failed verification (labeled negative fixtures)
@@ -39,6 +40,15 @@ schemas/     Record schemas — SFT JSONL + DPO preference pairs
 eval/        Eval harness — held-out scenarios, rubric scoring, critical-failure gate
 scripts/     Pipeline scripts and tooling
 Cargo.toml   Rust workspace root — all pipeline code is Rust
+```
+
+`data/gold/sft_gold.jsonl` holds the accepted calibration rows,
+`data/gold/sft_gold_negative.jsonl` holds machine-labeled §3 negative fixtures,
+and `data/gold/REVIEW_NOTES.md` is the row-by-row contract review and index.
+Validate both gold files together with:
+
+```sh
+cargo run -p euthymia-schema --bin euthymia-validate -- sft data/gold/sft_gold.jsonl data/gold/sft_gold_negative.jsonl
 ```
 
 ## Data flow

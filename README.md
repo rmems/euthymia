@@ -31,8 +31,9 @@ contract/    Behavioral contract — the canonical rules every artifact answers 
              (contract/BEHAVIORAL_CONTRACT.md)
 taxonomy/    Scenario taxonomy and coverage matrix
 data/        Dataset artifacts
-data/gold/       Hand-reviewed exemplar rows (gold seed set): sft_gold.jsonl,
-                 sft_gold_negative.jsonl, and REVIEW_NOTES.md
+data/gold/       Contract calibration exemplar rows (gold seed set; human
+                 review pending): sft_gold.jsonl, sft_gold_negative.jsonl,
+                 and REVIEW_NOTES.md
 data/raw/        Raw teacher-model outputs — local only, gitignored
 data/admitted/   Records that passed verification
 data/rejected/   Records that failed verification (labeled negative fixtures)

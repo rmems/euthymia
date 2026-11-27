@@ -7,7 +7,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use euthymia_schema::{Competency, Family, SftRecord, VerificationResult, VerificationStatus};
+use euthymia_schema::{
+    Competency, CriticalFailure, Family, SftRecord, VerificationResult, VerificationStatus,
+};
 
 const EA_ANCHOR: (&str, Competency) = ("eu-brk-901", Competency::EmotionalAwareness);
 const CD_ANCHOR: (&str, Competency) = ("eu-dis-902", Competency::CognitiveDiscipline);
@@ -29,6 +31,28 @@ const NEGATIVE_IDS: [&str; 4] = [
     NEGATIVE_SUBSTANCE_ID,
     NEGATIVE_AI_DEPENDENCE_ID,
     NEGATIVE_REVENGE_ID,
+];
+const NEGATIVE_EXPECTATIONS: [(&str, CriticalFailure, &str); 4] = [
+    (
+        NEGATIVE_SHAME_ID,
+        CriticalFailure::ShameBasedDiscipline,
+        "§3.2 Shame-Based Discipline @ V0.1.0",
+    ),
+    (
+        NEGATIVE_SUBSTANCE_ID,
+        CriticalFailure::EnablingSubstanceUse,
+        "§3.3 Enabling Substance Use in Recovery @ V0.1.0",
+    ),
+    (
+        NEGATIVE_AI_DEPENDENCE_ID,
+        CriticalFailure::FosteringAiDependence,
+        "§3.4 Fostering AI Dependence @ V0.1.0",
+    ),
+    (
+        NEGATIVE_REVENGE_ID,
+        CriticalFailure::RevengeOrHarassment,
+        "§3.1 Revenge or Harassment @ V0.1.0",
+    ),
 ];
 
 const ALL_FAMILIES: [Family; 7] = [
@@ -87,7 +111,11 @@ fn assert_accepted_metadata(record: &SftRecord) {
     );
 }
 
-fn assert_negative_metadata(record: &SftRecord) {
+fn assert_negative_metadata(
+    record: &SftRecord,
+    expected_failure: CriticalFailure,
+    expected_citation: &str,
+) {
     assert!(
         record.is_negative_fixture,
         "{} must be labeled as a negative fixture",
@@ -100,9 +128,10 @@ fn assert_negative_metadata(record: &SftRecord) {
         "{} must be rejected",
         record.scenario_id
     );
-    assert!(
-        verification.critical_failure.is_some(),
-        "{} must record a critical_failure",
+    assert_eq!(
+        verification.critical_failure,
+        Some(expected_failure),
+        "{} must record critical_failure {expected_failure:?}",
         record.scenario_id
     );
     let expected_rejection = record
@@ -117,6 +146,11 @@ fn assert_negative_metadata(record: &SftRecord) {
     assert!(
         expected_rejection.ends_with("@ V0.1.0"),
         "{} expected_rejection should end with @ V0.1.0: {expected_rejection}",
+        record.scenario_id
+    );
+    assert_eq!(
+        expected_rejection, expected_citation,
+        "{} expected_rejection should exactly match its critical failure",
         record.scenario_id
     );
 }
@@ -165,7 +199,16 @@ fn accepted_and_negative_rows_carry_expected_verification_metadata() {
         );
     }
     for record in &negatives {
-        assert_negative_metadata(record);
+        let (_, expected_failure, expected_citation) = NEGATIVE_EXPECTATIONS
+            .iter()
+            .find(|(expected_id, _, _)| *expected_id == record.scenario_id)
+            .unwrap_or_else(|| {
+                panic!(
+                    "{} is not one of the registered negative fixture IDs",
+                    record.scenario_id
+                )
+            });
+        assert_negative_metadata(record, *expected_failure, expected_citation);
     }
 }
 

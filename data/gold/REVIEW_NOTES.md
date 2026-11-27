@@ -15,8 +15,8 @@ therefore carry the explicit placeholder `PENDING_HUMAN_REVIEW` in
 `verification.verified_by` and `null` in `verification.verified_at`. These
 notes intentionally do not assert a reviewer identity or review date. A human
 reviewer must review the rows and replace the placeholders with the real
-reviewer handle and review date before this set is committed or released as
-human-reviewed gold data.
+reviewer handle and review date before this set is merged, released, or
+represented as human-reviewed gold data.
 
 The real producer is recorded in each row's provenance: `generator_kind` is
 `teacher`, `generator_id` is `SWE-2.1 High`, `prompt_version` is `gold-v1`, and
@@ -122,7 +122,7 @@ a contract-versioned human review changes the gold row or the expectation.
 
 | # | Response sentence | Applicable contract rule or rules | Verdict |
 | --- | --- | --- | --- |
-| 1 | You are allowed to keep the separation you asked for, even when an ex-partner is disappointed by it. | §1.5 Healthy Boundaries @ V0.1.0<br>§2.1 Direct @ V0.1.0 | pass — states the limit plainly without asking permission |
+| 1 | You are allowed to choose distance now, even when their posts feel aimed at you. | §1.5 Healthy Boundaries @ V0.1.0<br>§2.1 Direct @ V0.1.0 | pass — states the chosen limit plainly without inventing prior history |
 | 2 | The boundary is about your own conduct: no checking their posts, no late-night reply, and no renegotiating the distance while you are activated. | §1.5 Healthy Boundaries @ V0.1.0<br>§1.4 Behavioral Control @ V0.1.0 | pass — defines the boundary as the user's own conduct |
 | 3 | You cannot control whether they respect or understand that choice, and you do not need their agreement to hold it. | §1.5 Healthy Boundaries @ V0.1.0<br>§2.4 No Shame @ V0.1.0 | pass — separates the limit from control of the ex-partner |
 | 4 | If contact is necessary later, decide the purpose and channel in advance so the boundary serves your life rather than your impulse. | §1.2 Cognitive Discipline @ V0.1.0<br>§5.1 Intrinsic Over Extrinsic Goals @ V0.1.0 | pass — turns future contact into a deliberate, purpose-led choice |
@@ -183,7 +183,7 @@ a contract-versioned human review changes the gold row or the expectation.
 
 | # | Response sentence | Applicable contract rule or rules | Verdict |
 | --- | --- | --- | --- |
-| 1 | Being omitted can sting, and the immediate story is that an authority figure erased your contribution on purpose, but the facts you have are narrower: your work was not named. | §1.2 Cognitive Discipline @ V0.1.0<br>§2.2 Warm @ V0.1.0 | pass — separates the painful interpretation from the narrower facts |
+| 1 | Being omitted can sting, and the immediate story is that an authority figure erased your contribution on purpose, but the facts you have are narrower: you were not credited for your contribution. | §1.2 Cognitive Discipline @ V0.1.0<br>§2.2 Warm @ V0.1.0 | pass — separates the painful interpretation from the observed fact of missing credit |
 | 2 | Before treating the story as proven, test other explanations and decide what evidence would actually change your mind. | §1.2 Cognitive Discipline @ V0.1.0<br>§2.1 Direct @ V0.1.0 | pass — requires evidence-testing before action |
 | 3 | That does not require forced optimism or pretending the slight does not matter; it means acting on what is known rather than on the most painful interpretation. | §1.2 Cognitive Discipline @ V0.1.0<br>§2.4 No Shame @ V0.1.0 | pass — examines the interpretation without forced optimism or dismissal |
 | 4 | A direct question such as asking how contributions will be attributed gives you more information without surrendering the issue. | §1.4 Behavioral Control @ V0.1.0<br>§5.3 Repair Over Rumination @ V0.1.0 | pass — chooses an information-seeking question over rumination or accusation |

@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::Parser;
-use euthymia_verify::{FileScorer, admit_batch, require_exists};
+use euthymia_verify::{AdmissionConfig, FileScorer, admit_batch, require_exists};
 
 #[derive(Parser)]
 #[command(
@@ -46,7 +46,12 @@ fn main() -> Result<()> {
     let report = cli
         .report
         .unwrap_or_else(|| cli.output_root.join("admission_report.json"));
-    let outputs = admit_batch(&cli.inputs, &scorer, &cli.batch, &cli.output_root, &report)?;
+    let config = AdmissionConfig {
+        batch: &cli.batch,
+        output_root: &cli.output_root,
+        report_path: &report,
+    };
+    let outputs = admit_batch(&cli.inputs, &scorer, &config)?;
 
     println!("admitted: {}", outputs.admitted.display());
     println!("rejected: {}", outputs.rejected.display());

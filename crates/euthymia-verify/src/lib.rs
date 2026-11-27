@@ -228,6 +228,25 @@ pub struct AdmissionOutputs {
     pub report: PathBuf,
 }
 
+/// Admission run configuration, grouped so the batch entry point stays small.
+pub struct AdmissionConfig<'a> {
+    pub batch: &'a str,
+    pub output_root: &'a Path,
+    pub report_path: &'a Path,
+}
+
+impl AdmissionConfig<'_> {
+    fn validate(&self) -> Result<()> {
+        ensure!(
+            self.batch
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_')),
+            "batch name may contain only ASCII letters, digits, '-' and '_'"
+        );
+        Ok(())
+    }
+}
+
 fn contract_sections() -> Vec<String> {
     [
         "§1 Six Competencies",
@@ -247,45 +266,54 @@ fn sha256_bytes(bytes: &[u8]) -> String {
         .collect()
 }
 
-fn read_batch(paths: &[PathBuf]) -> Result<(Vec<BatchLine>, Vec<InputFileReport>)> {
-    let mut rows = Vec::new();
-    let mut files = Vec::new();
-    for path in paths {
-        let bytes =
-            fs::read(path).with_context(|| format!("failed to read input {}", path.display()))?;
-        files.push(InputFileReport {
-            path: path.display().to_string(),
-            sha256: sha256_bytes(&bytes),
-        });
-        let text = String::from_utf8(bytes)
-            .with_context(|| format!("input {} is not valid UTF-8", path.display()))?;
-        for (index, line) in text.lines().enumerate() {
-            if line.trim().is_empty() {
-                continue;
-            }
-            let scenario_id = record_id(line, RecordKind::Sft)
-                .unwrap_or_else(|| format!("<unidentified:{}:{}>", path.display(), index + 1));
-            rows.push(BatchLine {
-                input_path: path.clone(),
-                line_number: index + 1,
-                line: line.to_string(),
-                scenario_id,
-            });
-        }
-    }
+fn read_input_file(path: &Path) -> Result<(InputFileReport, Vec<BatchLine>)> {
+    let bytes =
+        fs::read(path).with_context(|| format!("failed to read input {}", path.display()))?;
+    let report = InputFileReport {
+        path: path.display().to_string(),
+        sha256: sha256_bytes(&bytes),
+    };
+    let text = String::from_utf8(bytes)
+        .with_context(|| format!("input {} is not valid UTF-8", path.display()))?;
+    let rows = text
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| !line.trim().is_empty())
+        .map(|(index, line)| BatchLine {
+            input_path: path.to_path_buf(),
+            line_number: index + 1,
+            line: line.to_string(),
+            scenario_id: record_id(line, RecordKind::Sft)
+                .unwrap_or_else(|| format!("<unidentified:{}:{}>", path.display(), index + 1)),
+        })
+        .collect();
+    Ok((report, rows))
+}
 
+fn ensure_unique_scenario_ids(rows: &[BatchLine]) -> Result<()> {
     let mut seen = HashSet::new();
-    let mut duplicates = Vec::new();
-    for row in &rows {
-        if !seen.insert(row.scenario_id.clone()) {
-            duplicates.push(row.scenario_id.clone());
-        }
-    }
+    let duplicates: Vec<String> = rows
+        .iter()
+        .filter(|row| !seen.insert(row.scenario_id.clone()))
+        .map(|row| row.scenario_id.clone())
+        .collect();
     ensure!(
         duplicates.is_empty(),
         "batch contains duplicate scenario_id values: {}",
         duplicates.join(", ")
     );
+    Ok(())
+}
+
+fn read_batch(paths: &[PathBuf]) -> Result<(Vec<BatchLine>, Vec<InputFileReport>)> {
+    let mut rows = Vec::new();
+    let mut files = Vec::new();
+    for path in paths {
+        let (report, mut file_rows) = read_input_file(path)?;
+        files.push(report);
+        rows.append(&mut file_rows);
+    }
+    ensure_unique_scenario_ids(&rows)?;
     Ok((rows, files))
 }
 
@@ -304,12 +332,16 @@ fn trim_punctuation(token: &str) -> &str {
     token.trim_matches(|c: char| matches!(c, '.' | '!' | '?' | ':'))
 }
 
+fn valid_email_domain(domain: &str) -> bool {
+    domain.contains('.') && !domain.starts_with('.') && !domain.ends_with('.')
+}
+
 fn looks_like_email(token: &str) -> bool {
     let trimmed = trim_punctuation(token);
-    let Some((local, domain)) = trimmed.split_once('@') else {
-        return false;
-    };
-    !local.is_empty() && domain.contains('.') && !domain.starts_with('.') && !domain.ends_with('.')
+    match trimmed.split_once('@') {
+        Some((local, domain)) => !local.is_empty() && valid_email_domain(domain),
+        None => false,
+    }
 }
 
 fn looks_like_handle(token: &str) -> bool {
@@ -317,61 +349,83 @@ fn looks_like_handle(token: &str) -> bool {
     trimmed.starts_with('@') && trimmed.len() > 1 && !trimmed[1..].contains('@')
 }
 
-fn looks_like_phone(token: &str) -> bool {
-    let trimmed = trim_punctuation(token);
-    let digits = trimmed.chars().filter(|c| c.is_ascii_digit()).count();
-    let phone_chars = trimmed
+fn phone_chars_only(trimmed: &str) -> bool {
+    trimmed
         .chars()
-        .all(|c| c.is_ascii_digit() || matches!(c, '+' | '-' | '.' | 'x' | 'X'));
-    if !phone_chars || digits < 7 {
-        return false;
-    }
-    // ISO dates are numeric metadata or ordinary date references, not phone
-    // numbers; contiguous 10–11 digits or a separator-bearing token otherwise
-    // receives the conservative privacy treatment.
-    let iso_date = trimmed.len() == 10
+        .all(|c| c.is_ascii_digit() || matches!(c, '+' | '-' | '.' | 'x' | 'X'))
+}
+
+fn is_iso_date_token(trimmed: &str) -> bool {
+    trimmed.len() == 10
         && trimmed.chars().enumerate().all(|(index, c)| {
             if matches!(index, 4 | 7) {
                 c == '-'
             } else {
                 c.is_ascii_digit()
             }
-        });
-    !iso_date
+        })
+}
+
+fn looks_like_phone(token: &str) -> bool {
+    let trimmed = trim_punctuation(token);
+    let digits = trimmed.chars().filter(|c| c.is_ascii_digit()).count();
+    // ISO dates are numeric metadata or ordinary date references, not phone
+    // numbers. Other digit-dense tokens receive conservative privacy treatment.
+    digits >= 7 && phone_chars_only(trimmed) && !is_iso_date_token(trimmed)
+}
+
+fn identifier_finding(token: &str) -> Option<&'static str> {
+    if looks_like_email(token) {
+        Some("email")
+    } else if looks_like_handle(token) {
+        Some("handle")
+    } else if looks_like_phone(token) {
+        Some("phone")
+    } else {
+        None
+    }
+}
+
+fn token_privacy_findings(text: &str) -> Vec<&'static str> {
+    tokens(text).filter_map(identifier_finding).collect()
+}
+
+fn url_findings(lower: &str) -> Vec<&'static str> {
+    ["http://", "https://", "www."]
+        .into_iter()
+        .any(|needle| lower.contains(needle))
+        .then_some("url")
+        .into_iter()
+        .collect()
+}
+
+fn self_identification_findings(lower: &str) -> Vec<&'static str> {
+    [
+        "my name is ",
+        "my address is ",
+        "i live at ",
+        "my email is ",
+        "my phone number is ",
+        "call me at ",
+    ]
+    .into_iter()
+    .filter(|phrase| lower.contains(phrase))
+    .map(|_| "self-identification")
+    .collect()
 }
 
 /// Deterministic §4 identifier screen over prompt and response text. This is
 /// deliberately conservative and mechanical; generalized roles and ordinary
 /// emotional content do not trip it.
 pub fn privacy_findings(user_message: &str, response: &str) -> Vec<&'static str> {
-    let text = format!("{user_message}\n{response}");
+    let text = format!(
+        "{user_message}
+{response}"
+    );
     let lower = text.to_lowercase();
-    let mut findings = Vec::new();
-
-    if lower.contains("http://") || lower.contains("https://") || lower.contains("www.") {
-        findings.push("url");
-    }
-    for token in tokens(&text) {
-        if looks_like_email(token) {
-            findings.push("email");
-        } else if looks_like_handle(token) {
-            findings.push("handle");
-        } else if looks_like_phone(token) {
-            findings.push("phone");
-        }
-    }
-    for (phrase, finding) in [
-        ("my name is ", "self-identification"),
-        ("my address is ", "self-identification"),
-        ("i live at ", "self-identification"),
-        ("my email is ", "self-identification"),
-        ("my phone number is ", "self-identification"),
-        ("call me at ", "self-identification"),
-    ] {
-        if lower.contains(phrase) {
-            findings.push(finding);
-        }
-    }
+    let mut findings = url_findings(&lower);
+    findings.extend(token_privacy_findings(&text));
+    findings.extend(self_identification_findings(&lower));
     findings.sort_unstable();
     findings.dedup();
     findings
@@ -483,95 +537,264 @@ struct Decision {
     scorer_rationale: Option<String>,
 }
 
-fn decision_record(
-    mut record: SftRecord,
-    status: euthymia_schema::enums::VerificationStatus,
+#[derive(Clone)]
+struct VerificationFields {
     rule: Option<AdmissionRule>,
     rubric_score: Option<u8>,
     privacy_pass: Option<bool>,
-    scorer_id: Option<&str>,
-    run_date: &str,
+    scorer_id: Option<String>,
+    scorer_rationale: Option<String>,
+    run_date: String,
+}
+
+impl VerificationFields {
+    fn gate(run_date: &str) -> Self {
+        Self {
+            rule: None,
+            rubric_score: None,
+            privacy_pass: None,
+            scorer_id: None,
+            scorer_rationale: None,
+            run_date: run_date.to_string(),
+        }
+    }
+
+    fn scored(score: &ScoreEntry, run_date: &str) -> Self {
+        Self {
+            scorer_id: Some(score.scorer_id.clone()),
+            scorer_rationale: Some(score.rationale.clone()),
+            rubric_score: Some(score.score),
+            privacy_pass: Some(true),
+            ..Self::gate(run_date)
+        }
+    }
+}
+
+struct RejectSpec {
+    rule: AdmissionRule,
+    detail: String,
+    fields: VerificationFields,
+}
+
+impl RejectSpec {
+    fn gate(
+        rule: AdmissionRule,
+        detail: String,
+        privacy_pass: Option<bool>,
+        run_date: &str,
+    ) -> Self {
+        let mut fields = VerificationFields::gate(run_date);
+        fields.rule = Some(rule);
+        fields.privacy_pass = privacy_pass;
+        Self {
+            rule,
+            detail,
+            fields,
+        }
+    }
+
+    fn scored(rule: AdmissionRule, detail: String, score: &ScoreEntry, run_date: &str) -> Self {
+        let mut fields = VerificationFields::scored(score, run_date);
+        fields.rule = Some(rule);
+        Self {
+            rule,
+            detail,
+            fields,
+        }
+    }
+}
+
+fn decision_record(
+    mut record: SftRecord,
+    status: euthymia_schema::enums::VerificationStatus,
+    fields: VerificationFields,
 ) -> SftRecord {
-    let critical_failure = rule.and_then(AdmissionRule::critical_failure);
+    let critical_failure = fields.rule.and_then(AdmissionRule::critical_failure);
     record.verification = Some(VerificationResult {
         status,
-        rubric_score,
+        rubric_score: fields.rubric_score,
         critical_failure,
-        privacy_pass,
-        verified_by: Some(match scorer_id {
+        privacy_pass: fields.privacy_pass,
+        verified_by: Some(match fields.scorer_id.as_deref() {
             Some(scorer) => format!("euthymia-admit {PIPELINE_VERSION} + scorer {scorer}"),
             None => format!("euthymia-admit {PIPELINE_VERSION}"),
         }),
-        verified_at: Some(run_date.to_string()),
+        verified_at: Some(fields.run_date),
     });
     record
 }
 
-fn reject(
-    record: SftRecord,
-    rule: AdmissionRule,
-    detail: String,
-    rubric_score: Option<u8>,
-    privacy_pass: Option<bool>,
-    scorer_id: Option<&str>,
-    scorer_rationale: Option<&str>,
-    run_date: &str,
-) -> Decision {
+fn reject(record: SftRecord, spec: RejectSpec, run_date: &str) -> Decision {
     let scenario_id = record.scenario_id.clone();
-    let critical_failure = rule.critical_failure();
+    let fields = VerificationFields {
+        run_date: run_date.to_string(),
+        ..spec.fields
+    };
+    let critical_failure = spec.rule.critical_failure();
+    let output = decision_record(
+        record,
+        euthymia_schema::enums::VerificationStatus::Rejected,
+        fields.clone(),
+    );
     Decision {
         scenario_id,
-        record: Some(decision_record(
-            record,
-            euthymia_schema::enums::VerificationStatus::Rejected,
-            Some(rule),
-            rubric_score,
-            privacy_pass,
-            scorer_id,
-            run_date,
-        )),
+        record: Some(output),
         verdict: VerificationStatusName::Rejected,
-        rule: Some(rule),
-        detail,
-        rubric_score,
+        rule: Some(spec.rule),
+        detail: spec.detail,
+        rubric_score: fields.rubric_score,
         critical_failure,
-        privacy_pass,
-        scorer_id: scorer_id.map(str::to_string),
-        scorer_rationale: scorer_rationale.map(str::to_string),
+        privacy_pass: fields.privacy_pass,
+        scorer_id: fields.scorer_id,
+        scorer_rationale: fields.scorer_rationale,
     }
 }
 
+fn schema_invalid_spec(errors: Vec<String>, row: &BatchLine, run_date: &str) -> RejectSpec {
+    RejectSpec::gate(
+        AdmissionRule::SchemaInvalid,
+        format!(
+            "{}:{}: {}",
+            row.input_path.display(),
+            row.line_number,
+            errors.join("; ")
+        ),
+        None,
+        run_date,
+    )
+}
+
 fn schema_invalid_decision(row: &BatchLine, errors: Vec<String>, run_date: &str) -> Decision {
-    let detail = format!(
-        "{}:{}: {}",
-        row.input_path.display(),
-        row.line_number,
-        errors.join("; ")
-    );
+    let spec = schema_invalid_spec(errors, row, run_date);
     if let Ok(record) = serde_json::from_str::<SftRecord>(&row.line) {
-        return reject(
-            record,
-            AdmissionRule::SchemaInvalid,
-            detail,
-            None,
-            None,
-            None,
-            None,
-            run_date,
-        );
+        return reject(record, spec, run_date);
     }
     Decision {
         scenario_id: row.scenario_id.clone(),
         record: None,
         verdict: VerificationStatusName::Rejected,
-        rule: Some(AdmissionRule::SchemaInvalid),
-        detail,
+        rule: Some(spec.rule),
+        detail: spec.detail,
         rubric_score: None,
         critical_failure: None,
         privacy_pass: None,
         scorer_id: None,
         scorer_rationale: None,
     }
+}
+
+fn privacy_rejection(record: &SftRecord, run_date: &str) -> Option<RejectSpec> {
+    let privacy = privacy_findings(&record.user_message, &record.response);
+    (!privacy.is_empty()).then(|| {
+        RejectSpec::gate(
+            AdmissionRule::PrivacyViolation,
+            format!("privacy identifiers detected: {}", privacy.join(", ")),
+            Some(false),
+            run_date,
+        )
+    })
+}
+
+fn lexical_rejection(record: &SftRecord, run_date: &str) -> Option<RejectSpec> {
+    lexical_critical_failure(record).map(|failure| {
+        let rule = AdmissionRule::from_critical_failure(failure);
+        RejectSpec::gate(
+            rule,
+            format!("lexical §3 critical-failure screen matched {}", rule.id()),
+            Some(true),
+            run_date,
+        )
+    })
+}
+
+fn negative_fixture_rejection(record: &SftRecord, run_date: &str) -> Option<RejectSpec> {
+    if !record.is_negative_fixture {
+        return None;
+    }
+    expected_negative_fixture_failure(record).map(|failure| {
+        let rule = AdmissionRule::from_critical_failure(failure);
+        RejectSpec::gate(
+            rule,
+            format!("labeled negative fixture fail-closed as {}", rule.id()),
+            Some(true),
+            run_date,
+        )
+    })
+}
+
+fn pre_score_rejection(record: &SftRecord, run_date: &str) -> Option<RejectSpec> {
+    privacy_rejection(record, run_date)
+        .or_else(|| lexical_rejection(record, run_date))
+        .or_else(|| negative_fixture_rejection(record, run_date))
+}
+
+fn unscored_rejection(run_date: &str) -> RejectSpec {
+    RejectSpec::gate(
+        AdmissionRule::RubricBelowThreshold,
+        "unscored".to_string(),
+        Some(true),
+        run_date,
+    )
+}
+
+fn score_rejection(score: &ScoreEntry, run_date: &str) -> Option<RejectSpec> {
+    if let Some(failure) = score.critical_failure {
+        let rule = AdmissionRule::from_critical_failure(failure);
+        return Some(RejectSpec::scored(
+            rule,
+            format!("scorer {} raised {}", score.scorer_id, rule.id()),
+            score,
+            run_date,
+        ));
+    }
+    (score.score < ADMIT_THRESHOLD).then(|| {
+        RejectSpec::scored(
+            AdmissionRule::RubricBelowThreshold,
+            format!(
+                "score {} below admission threshold {ADMIT_THRESHOLD}",
+                score.score
+            ),
+            score,
+            run_date,
+        )
+    })
+}
+
+fn admit_decision(record: SftRecord, score: &ScoreEntry, run_date: &str) -> Decision {
+    let scenario_id = record.scenario_id.clone();
+    let fields = VerificationFields::scored(score, run_date);
+    let admitted = decision_record(
+        record,
+        euthymia_schema::enums::VerificationStatus::Admitted,
+        fields.clone(),
+    );
+    Decision {
+        scenario_id,
+        record: Some(admitted),
+        verdict: VerificationStatusName::Admitted,
+        rule: None,
+        detail: format!("admitted at rubric score {}", score.score),
+        rubric_score: Some(score.score),
+        critical_failure: None,
+        privacy_pass: Some(true),
+        scorer_id: fields.scorer_id,
+        scorer_rationale: fields.scorer_rationale,
+    }
+}
+
+fn parse_valid_record(row: &BatchLine) -> SftRecord {
+    serde_json::from_str(&row.line)
+        .expect("a line passing schema validation deserializes as SftRecord")
+}
+
+fn score_decision(record: SftRecord, scorer: &impl Scorer, run_date: &str) -> Decision {
+    let Some(score) = scorer.score(&record.scenario_id) else {
+        return reject(record, unscored_rejection(run_date), run_date);
+    };
+    if let Some(spec) = score_rejection(score, run_date) {
+        return reject(record, spec, run_date);
+    }
+    admit_decision(record, score, run_date)
 }
 
 fn decide_row(
@@ -584,121 +807,11 @@ fn decide_row(
     if !schema_errors.is_empty() {
         return schema_invalid_decision(row, schema_errors, run_date);
     }
-
-    let record: SftRecord = serde_json::from_str(&row.line)
-        .expect("a line passing schema validation deserializes as SftRecord");
-
-    let privacy = privacy_findings(&record.user_message, &record.response);
-    if !privacy.is_empty() {
-        return reject(
-            record,
-            AdmissionRule::PrivacyViolation,
-            format!("privacy identifiers detected: {}", privacy.join(", ")),
-            None,
-            Some(false),
-            None,
-            None,
-            run_date,
-        );
+    let record = parse_valid_record(row);
+    if let Some(spec) = pre_score_rejection(&record, run_date) {
+        return reject(record, spec, run_date);
     }
-
-    if let Some(failure) = lexical_critical_failure(&record) {
-        let rule = AdmissionRule::from_critical_failure(failure);
-        return reject(
-            record,
-            rule,
-            format!("lexical §3 critical-failure screen matched {}", rule.id()),
-            None,
-            Some(true),
-            None,
-            None,
-            run_date,
-        );
-    }
-
-    // A labeled negative fixture is reject-only by contract even if the
-    // lexical screen misses its particular wording. Current fixtures are still
-    // expected to be caught lexically above; this mapping is the fail-closed
-    // guard, not the calibration signal.
-    if record.is_negative_fixture
-        && let Some(failure) = expected_negative_fixture_failure(&record)
-    {
-        let rule = AdmissionRule::from_critical_failure(failure);
-        return reject(
-            record,
-            rule,
-            format!("labeled negative fixture fail-closed as {}", rule.id()),
-            None,
-            Some(true),
-            None,
-            None,
-            run_date,
-        );
-    }
-
-    let Some(score) = scorer.score(&record.scenario_id) else {
-        return reject(
-            record,
-            AdmissionRule::RubricBelowThreshold,
-            "unscored".to_string(),
-            None,
-            Some(true),
-            None,
-            None,
-            run_date,
-        );
-    };
-    if let Some(failure) = score.critical_failure {
-        let rule = AdmissionRule::from_critical_failure(failure);
-        return reject(
-            record,
-            rule,
-            format!("scorer {} raised {}", score.scorer_id, rule.id()),
-            Some(score.score),
-            Some(true),
-            Some(&score.scorer_id),
-            Some(&score.rationale),
-            run_date,
-        );
-    }
-    if score.score < ADMIT_THRESHOLD {
-        return reject(
-            record,
-            AdmissionRule::RubricBelowThreshold,
-            format!(
-                "score {} below admission threshold {ADMIT_THRESHOLD}",
-                score.score
-            ),
-            Some(score.score),
-            Some(true),
-            Some(&score.scorer_id),
-            Some(&score.rationale),
-            run_date,
-        );
-    }
-
-    let scenario_id = record.scenario_id.clone();
-    let admitted = decision_record(
-        record,
-        euthymia_schema::enums::VerificationStatus::Admitted,
-        None,
-        Some(score.score),
-        Some(true),
-        Some(&score.scorer_id),
-        run_date,
-    );
-    Decision {
-        scenario_id,
-        record: Some(admitted),
-        verdict: VerificationStatusName::Admitted,
-        rule: None,
-        detail: format!("admitted at rubric score {}", score.score),
-        rubric_score: Some(score.score),
-        critical_failure: None,
-        privacy_pass: Some(true),
-        scorer_id: Some(score.scorer_id.clone()),
-        scorer_rationale: Some(score.rationale.clone()),
-    }
+    score_decision(record, scorer, run_date)
 }
 
 fn write_jsonl(path: &Path, records: &[SftRecord]) -> Result<()> {
@@ -714,41 +827,40 @@ fn write_jsonl(path: &Path, records: &[SftRecord]) -> Result<()> {
     fs::write(path, out).with_context(|| format!("failed to write {}", path.display()))
 }
 
-/// Run admission for one batch and write admitted rows, rejected rows, and a
-/// machine-readable report.
-pub fn admit_batch(
-    inputs: &[PathBuf],
-    scorer: &impl Scorer,
-    batch: &str,
-    output_root: &Path,
-    report_path: &Path,
-) -> Result<AdmissionOutputs> {
-    ensure!(
-        !inputs.is_empty(),
-        "at least one input JSONL file is required"
-    );
-    ensure!(
-        batch
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_')),
-        "batch name may contain only ASCII letters, digits, '-' and '_'"
-    );
+struct BatchOutcome {
+    admitted: Vec<SftRecord>,
+    rejected: Vec<SftRecord>,
+    rows: BTreeMap<String, RowVerdict>,
+    counts: AdmissionCounts,
+}
 
-    let (rows, input_files) = read_batch(inputs)?;
-    let validator = RecordValidator::new(RecordKind::Sft)?;
-    let run_date = today_utc();
-    let decisions: Vec<Decision> = rows
-        .par_iter()
-        .map(|row| decide_row(row, &validator, scorer, &run_date))
-        .collect();
+fn row_verdict(decision: Decision, output_written: bool) -> RowVerdict {
+    RowVerdict {
+        verdict: decision.verdict,
+        rule: decision.rule,
+        detail: decision.detail,
+        rubric_score: decision.rubric_score,
+        critical_failure: decision.critical_failure,
+        privacy_pass: decision.privacy_pass,
+        scorer_id: decision.scorer_id,
+        scorer_rationale: decision.scorer_rationale,
+        output_written,
+        contract_sections_evaluated: contract_sections(),
+    }
+}
 
-    let mut admitted = Vec::new();
-    let mut rejected = Vec::new();
-    let mut report_rows = BTreeMap::new();
-    let mut per_rule: BTreeMap<String, usize> = AdmissionRule::ALL
+fn empty_rule_counts() -> BTreeMap<String, usize> {
+    AdmissionRule::ALL
         .into_iter()
         .map(|rule| (rule.id().to_string(), 0))
-        .collect();
+        .collect()
+}
+
+fn collect_decisions(decisions: Vec<Decision>, input_rows: usize) -> BatchOutcome {
+    let mut admitted = Vec::new();
+    let mut rejected = Vec::new();
+    let mut rows = BTreeMap::new();
+    let mut per_rule = empty_rule_counts();
     let mut admitted_count = 0usize;
     let mut rejected_count = 0usize;
 
@@ -771,57 +883,101 @@ pub fn admit_batch(
                 }
             }
         }
-        report_rows.insert(
+        rows.insert(
             decision.scenario_id.clone(),
-            RowVerdict {
-                verdict: decision.verdict,
-                rule: decision.rule,
-                detail: decision.detail,
-                rubric_score: decision.rubric_score,
-                critical_failure: decision.critical_failure,
-                privacy_pass: decision.privacy_pass,
-                scorer_id: decision.scorer_id,
-                scorer_rationale: decision.scorer_rationale,
-                output_written,
-                contract_sections_evaluated: contract_sections(),
-            },
+            row_verdict(decision, output_written),
         );
     }
 
-    let report = AdmissionReport {
-        batch: batch.to_string(),
+    BatchOutcome {
+        admitted,
+        rejected,
+        rows,
+        counts: AdmissionCounts {
+            input_rows,
+            admitted: admitted_count,
+            rejected: rejected_count,
+            per_rule,
+        },
+    }
+}
+
+fn build_report(
+    config: &AdmissionConfig<'_>,
+    scorer: &impl Scorer,
+    input_files: Vec<InputFileReport>,
+    outcome: &BatchOutcome,
+) -> AdmissionReport {
+    AdmissionReport {
+        batch: config.batch.to_string(),
         pipeline_version: format!("euthymia-admit {PIPELINE_VERSION}"),
         schema_version: CURRENT_SCHEMA_VERSION,
         contract_version: CONTRACT_VERSION.to_string(),
         contract_sections_evaluated: contract_sections(),
         input_files,
         score_file: scorer.source(),
-        counts: AdmissionCounts {
-            input_rows: rows.len(),
-            admitted: admitted_count,
-            rejected: rejected_count,
-            per_rule,
-        },
-        rows: report_rows,
-    };
+        counts: outcome.counts.clone(),
+        rows: outcome.rows.clone(),
+    }
+}
 
-    let admitted_path = output_root.join("admitted").join(format!("{batch}.jsonl"));
-    let rejected_path = output_root.join("rejected").join(format!("{batch}.jsonl"));
-    write_jsonl(&admitted_path, &admitted)?;
-    write_jsonl(&rejected_path, &rejected)?;
-    if let Some(parent) = report_path.parent() {
+fn write_report(path: &Path, report: &AdmissionReport) -> Result<()> {
+    if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
-    let report_json = serde_json::to_string_pretty(&report)? + "\n";
-    fs::write(report_path, report_json)
-        .with_context(|| format!("failed to write {}", report_path.display()))?;
+    let report_json = serde_json::to_string_pretty(report)?
+        + "
+";
+    fs::write(path, report_json).with_context(|| format!("failed to write {}", path.display()))
+}
 
+fn write_outputs(
+    config: &AdmissionConfig<'_>,
+    report: &AdmissionReport,
+    outcome: &BatchOutcome,
+) -> Result<AdmissionOutputs> {
+    let admitted_path = config
+        .output_root
+        .join("admitted")
+        .join(format!("{}.jsonl", config.batch));
+    let rejected_path = config
+        .output_root
+        .join("rejected")
+        .join(format!("{}.jsonl", config.batch));
+    write_jsonl(&admitted_path, &outcome.admitted)?;
+    write_jsonl(&rejected_path, &outcome.rejected)?;
+    write_report(config.report_path, report)?;
     Ok(AdmissionOutputs {
         admitted: admitted_path,
         rejected: rejected_path,
-        report: report_path.to_path_buf(),
+        report: config.report_path.to_path_buf(),
     })
+}
+
+/// Run admission for one batch and write admitted rows, rejected rows, and a
+/// machine-readable report.
+pub fn admit_batch(
+    inputs: &[PathBuf],
+    scorer: &impl Scorer,
+    config: &AdmissionConfig<'_>,
+) -> Result<AdmissionOutputs> {
+    ensure!(
+        !inputs.is_empty(),
+        "at least one input JSONL file is required"
+    );
+    config.validate()?;
+
+    let (rows, input_files) = read_batch(inputs)?;
+    let validator = RecordValidator::new(RecordKind::Sft)?;
+    let run_date = today_utc();
+    let decisions: Vec<Decision> = rows
+        .par_iter()
+        .map(|row| decide_row(row, &validator, scorer, &run_date))
+        .collect();
+    let outcome = collect_decisions(decisions, rows.len());
+    let report = build_report(config, scorer, input_files, &outcome);
+    write_outputs(config, &report, &outcome)
 }
 
 /// Current UTC date as `YYYY-MM-DD`, implemented without a clock dependency

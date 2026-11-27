@@ -20,6 +20,7 @@ use euthymia_schema::validate::EXPECTED_REJECTION_CITATIONS;
 use euthymia_schema::validator::{RecordKind, RecordValidator, record_id};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 const PIPELINE_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -350,9 +351,11 @@ fn looks_like_handle(token: &str) -> bool {
 }
 
 fn phone_chars_only(trimmed: &str) -> bool {
-    trimmed
-        .chars()
-        .all(|c| c.is_ascii_digit() || matches!(c, '+' | '-' | '.' | 'x' | 'X'))
+    trimmed.chars().all(|c| {
+        c.is_ascii_digit()
+            || c.is_whitespace()
+            || matches!(c, '+' | '-' | '.' | '(' | ')' | 'x' | 'X')
+    })
 }
 
 fn is_iso_date_token(trimmed: &str) -> bool {
@@ -366,12 +369,53 @@ fn is_iso_date_token(trimmed: &str) -> bool {
         })
 }
 
-fn looks_like_phone(token: &str) -> bool {
-    let trimmed = trim_punctuation(token);
+fn is_year_range_token(trimmed: &str) -> bool {
+    let parts: Vec<&str> = trimmed.split('-').collect();
+    parts.len() == 2
+        && parts
+            .iter()
+            .all(|part| part.len() == 4 && part.chars().all(|c| c.is_ascii_digit()))
+}
+
+fn looks_like_phone(segment: &str) -> bool {
+    let trimmed = trim_punctuation(segment.trim());
     let digits = trimmed.chars().filter(|c| c.is_ascii_digit()).count();
-    // ISO dates are numeric metadata or ordinary date references, not phone
-    // numbers. Other digit-dense tokens receive conservative privacy treatment.
-    digits >= 7 && phone_chars_only(trimmed) && !is_iso_date_token(trimmed)
+    // ISO dates and year ranges are ordinary numeric references, not phone
+    // numbers. Other digit-dense segments receive conservative treatment.
+    digits >= 7
+        && phone_chars_only(trimmed)
+        && !is_iso_date_token(trimmed)
+        && !is_year_range_token(trimmed)
+}
+
+fn phone_segments(text: &str) -> Vec<String> {
+    let mut segments = Vec::new();
+    let mut current = String::new();
+    for c in text.chars() {
+        if c.is_ascii_digit()
+            || c.is_whitespace()
+            || matches!(c, '+' | '-' | '.' | '(' | ')' | 'x' | 'X')
+        {
+            current.push(c);
+        } else if !current.trim().is_empty() {
+            segments.push(std::mem::take(&mut current));
+        } else {
+            current.clear();
+        }
+    }
+    if !current.trim().is_empty() {
+        segments.push(current);
+    }
+    segments
+}
+
+fn phone_findings(text: &str) -> Vec<&'static str> {
+    phone_segments(text)
+        .iter()
+        .any(|segment| looks_like_phone(segment))
+        .then_some("phone")
+        .into_iter()
+        .collect()
 }
 
 fn identifier_finding(token: &str) -> Option<&'static str> {
@@ -379,8 +423,6 @@ fn identifier_finding(token: &str) -> Option<&'static str> {
         Some("email")
     } else if looks_like_handle(token) {
         Some("handle")
-    } else if looks_like_phone(token) {
-        Some("phone")
     } else {
         None
     }
@@ -425,18 +467,39 @@ pub fn privacy_findings(user_message: &str, response: &str) -> Vec<&'static str>
     let lower = text.to_lowercase();
     let mut findings = url_findings(&lower);
     findings.extend(token_privacy_findings(&text));
+    findings.extend(phone_findings(&text));
     findings.extend(self_identification_findings(&lower));
     findings.sort_unstable();
     findings.dedup();
     findings
 }
 
+fn negated_before(text: &str, start: usize) -> bool {
+    let window_start = start.saturating_sub(32);
+    let window = &text[window_start..start];
+    [
+        "don't",
+        "do not",
+        "never",
+        "not ",
+        "avoid",
+        "rather than",
+        "instead of",
+        "without",
+    ]
+    .iter()
+    .any(|negation| window.contains(negation))
+}
+
 fn contains_any(text: &str, phrases: &[&str]) -> bool {
-    phrases.iter().any(|phrase| text.contains(phrase))
+    phrases.iter().any(|phrase| {
+        text.match_indices(phrase)
+            .any(|(start, _)| !negated_before(text, start))
+    })
 }
 
 fn expected_negative_fixture_failure(record: &SftRecord) -> Option<CriticalFailure> {
-    match record.expected_rejection.as_deref() {
+    match record.expected_rejection.as_deref().map(str::trim) {
         Some(citation) if citation == EXPECTED_REJECTION_CITATIONS[0] => {
             Some(CriticalFailure::RevengeOrHarassment)
         }
@@ -624,7 +687,11 @@ fn decision_record(
     record
 }
 
-fn reject(record: SftRecord, spec: RejectSpec, run_date: &str) -> Decision {
+fn reject(mut record: SftRecord, spec: RejectSpec, run_date: &str) -> Decision {
+    if spec.rule == AdmissionRule::PrivacyViolation {
+        record.user_message = "[redacted: privacy_violation]".to_string();
+        record.response = "[redacted: privacy_violation]".to_string();
+    }
     let scenario_id = record.scenario_id.clone();
     let fields = VerificationFields {
         run_date: run_date.to_string(),
@@ -654,10 +721,10 @@ fn schema_invalid_spec(errors: Vec<String>, row: &BatchLine, run_date: &str) -> 
     RejectSpec::gate(
         AdmissionRule::SchemaInvalid,
         format!(
-            "{}:{}: {}",
+            "{}:{}: schema validation failed with {} error(s)",
             row.input_path.display(),
             row.line_number,
-            errors.join("; ")
+            errors.len()
         ),
         None,
         run_date,
@@ -782,9 +849,18 @@ fn admit_decision(record: SftRecord, score: &ScoreEntry, run_date: &str) -> Deci
     }
 }
 
-fn parse_valid_record(row: &BatchLine) -> SftRecord {
-    serde_json::from_str(&row.line)
-        .expect("a line passing schema validation deserializes as SftRecord")
+fn admission_validation_line(line: &str) -> String {
+    let Ok(mut value) = serde_json::from_str::<Value>(line) else {
+        return line.to_string();
+    };
+    if let Some(object) = value.as_object_mut() {
+        object.insert("verification".to_string(), Value::Null);
+    }
+    serde_json::to_string(&value).unwrap_or_else(|_| line.to_string())
+}
+
+fn parse_valid_record(row: &BatchLine) -> Result<SftRecord, String> {
+    serde_json::from_str(&row.line).map_err(|err| format!("record failed to deserialize: {err}"))
 }
 
 fn score_decision(record: SftRecord, scorer: &impl Scorer, run_date: &str) -> Decision {
@@ -803,11 +879,18 @@ fn decide_row(
     scorer: &impl Scorer,
     run_date: &str,
 ) -> Decision {
-    let schema_errors = validator.validate_line(&row.line);
+    // Incoming verification is admission output, not candidate truth. Null it
+    // before the schema gate so a stale rejection cannot block re-verification;
+    // the original line is still what deserializes into the candidate row.
+    let validation_line = admission_validation_line(&row.line);
+    let schema_errors = validator.validate_line(&validation_line);
     if !schema_errors.is_empty() {
         return schema_invalid_decision(row, schema_errors, run_date);
     }
-    let record = parse_valid_record(row);
+    let record = match parse_valid_record(row) {
+        Ok(record) => record,
+        Err(err) => return schema_invalid_decision(row, vec![err], run_date),
+    };
     if let Some(spec) = pre_score_rejection(&record, run_date) {
         return reject(record, spec, run_date);
     }
@@ -932,19 +1015,72 @@ fn write_report(path: &Path, report: &AdmissionReport) -> Result<()> {
     fs::write(path, report_json).with_context(|| format!("failed to write {}", path.display()))
 }
 
+fn absolute_lexical(path: &Path) -> Result<PathBuf> {
+    if path.is_absolute() {
+        Ok(path.to_path_buf())
+    } else {
+        Ok(std::env::current_dir()?.join(path))
+    }
+}
+
+fn normalize_existing_path(path: &Path) -> Result<PathBuf> {
+    fs::canonicalize(path).with_context(|| format!("failed to canonicalize {}", path.display()))
+}
+
+fn normalize_output_path(path: &Path) -> Result<PathBuf> {
+    if path.exists() {
+        return normalize_existing_path(path);
+    }
+    let absolute = absolute_lexical(path)?;
+    let Some(parent) = absolute.parent() else {
+        return Ok(absolute);
+    };
+    let parent = fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf());
+    Ok(parent.join(absolute.file_name().unwrap_or_default()))
+}
+
+fn batch_output_paths(config: &AdmissionConfig<'_>) -> (PathBuf, PathBuf) {
+    (
+        config
+            .output_root
+            .join("admitted")
+            .join(format!("{}.jsonl", config.batch)),
+        config
+            .output_root
+            .join("rejected")
+            .join(format!("{}.jsonl", config.batch)),
+    )
+}
+
+fn ensure_output_paths_safe(inputs: &[PathBuf], config: &AdmissionConfig<'_>) -> Result<()> {
+    let (admitted, rejected) = batch_output_paths(config);
+    let outputs = [admitted, rejected, config.report_path.to_path_buf()];
+    let mut normalized_outputs = HashSet::new();
+    for output in &outputs {
+        let normalized = normalize_output_path(output)?;
+        ensure!(
+            normalized_outputs.insert(normalized.clone()),
+            "admission output paths must not collide: {}",
+            output.display()
+        );
+        for input in inputs {
+            ensure!(
+                normalized != normalize_existing_path(input)?,
+                "admission output {} would overwrite input {}",
+                output.display(),
+                input.display()
+            );
+        }
+    }
+    Ok(())
+}
+
 fn write_outputs(
     config: &AdmissionConfig<'_>,
     report: &AdmissionReport,
     outcome: &BatchOutcome,
 ) -> Result<AdmissionOutputs> {
-    let admitted_path = config
-        .output_root
-        .join("admitted")
-        .join(format!("{}.jsonl", config.batch));
-    let rejected_path = config
-        .output_root
-        .join("rejected")
-        .join(format!("{}.jsonl", config.batch));
+    let (admitted_path, rejected_path) = batch_output_paths(config);
     write_jsonl(&admitted_path, &outcome.admitted)?;
     write_jsonl(&rejected_path, &outcome.rejected)?;
     write_report(config.report_path, report)?;
@@ -967,6 +1103,7 @@ pub fn admit_batch(
         "at least one input JSONL file is required"
     );
     config.validate()?;
+    ensure_output_paths_safe(inputs, config)?;
 
     let (rows, input_files) = read_batch(inputs)?;
     let validator = RecordValidator::new(RecordKind::Sft)?;
@@ -1013,5 +1150,21 @@ pub fn require_exists(path: &Path, what: &str) -> Result<()> {
             bail!("{what} {} does not exist", path.display())
         }
         Err(err) => Err(err).with_context(|| format!("failed to inspect {}", path.display())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::privacy_findings;
+
+    #[test]
+    fn privacy_screen_catches_formatted_phone_numbers() {
+        assert!(privacy_findings("Call me at (555) 123-4567 tonight.", "").contains(&"phone"));
+    }
+
+    #[test]
+    fn privacy_screen_ignores_dates_and_year_ranges() {
+        assert!(!privacy_findings("During 2020-2021, things changed.", "").contains(&"phone"));
+        assert!(!privacy_findings("The date 2026-11-27 matters here.", "").contains(&"phone"));
     }
 }

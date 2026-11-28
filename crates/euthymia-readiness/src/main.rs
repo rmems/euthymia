@@ -11,6 +11,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
+const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
+const OPENROUTER_ENDPOINT: &str = "https://openrouter.ai/api/v1/chat/completions";
+const OPENROUTER_MODEL: &str = "deepseek/deepseek-v4.1-flash-1017";
+const OPENROUTER_KEY_ENV: &str = "OPENROUTER_API_KEY";
+
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 enum Provider {
@@ -47,16 +52,6 @@ impl Default for Config {
 
 impl Config {
     fn validate(&self) -> Result<()> {
-        ensure!(
-            !self.model.is_empty()
-                && self.model.len() <= 128
-                && self
-                    .model
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b"/._-".contains(&b))
-                && !self.model.to_ascii_lowercase().contains("latest"),
-            "model must be a non-floating identifier (not a credential)"
-        );
         match self.provider {
             Provider::Mock => ensure!(
                 self.model == "offline-mock-v1"
@@ -64,36 +59,12 @@ impl Config {
                     && self.api_key_env.is_none(),
                 "mock requires model offline-mock-v1, with no endpoint or credential variable"
             ),
-            Provider::Deepseek => {
-                let endpoint = self.endpoint.as_deref().context("endpoint required")?;
-                let rest = endpoint
-                    .strip_prefix("https://")
-                    .context("endpoint must use HTTPS")?;
-                let host = rest.split('/').next().unwrap_or_default();
-                ensure!(
-                    !host.is_empty()
-                        && host
-                            .bytes()
-                            .all(|b| b.is_ascii_alphanumeric() || b".-:".contains(&b))
-                        && rest
-                            .bytes()
-                            .all(|b| b.is_ascii_alphanumeric() || b"/._-:".contains(&b)),
-                    "endpoint must be a credential-free HTTPS URL without query, fragment or userinfo"
-                );
-                let name = self
-                    .api_key_env
-                    .as_deref()
-                    .context("api_key_env NAME required")?;
-                ensure!(
-                    !name.is_empty()
-                        && name.len() <= 128
-                        && name
-                            .bytes()
-                            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
-                        && !name.as_bytes()[0].is_ascii_digit(),
-                    "api_key_env must be an uppercase environment variable NAME"
-                );
-            }
+            Provider::Deepseek => ensure!(
+                self.model == OPENROUTER_MODEL
+                    && self.endpoint.as_deref() == Some(OPENROUTER_ENDPOINT)
+                    && self.api_key_env.as_deref() == Some(OPENROUTER_KEY_ENV),
+                "pilot requires pinned DeepSeek 1017 via OpenRouter chat/completions and OPENROUTER_API_KEY variable NAME"
+            ),
         }
         // Reuse the canonical validator, including real calendar-date validation.
         let errors = RecordValidator::new(RecordKind::Sft)?
@@ -189,33 +160,14 @@ fn main() -> Result<()> {
         cli.purpose == Purpose::Smoke,
         "training/export blocked: no reviewed teacher rights, human approval or RM-2588 release manifest"
     );
-    let (config, request_bytes) = if let Some(path) = &cli.request {
-        handoff::load_request(path)?
-    } else {
-        let config: Config = match &cli.config {
-            Some(path) => serde_json::from_slice(&handoff::read_bounded(path)?)?,
-            None => Config::default(),
-        };
-        config.validate()?;
-        let bytes = serde_json::to_vec_pretty(&handoff::request(&config))?;
-        (config, bytes)
-    };
+    let (config, request_bytes) = load_plan(&cli)?;
     if cli.check_config {
         println!(
             "configuration syntax valid; live generation disabled; rights and human approval UNREVIEWED"
         );
         return Ok(());
     }
-    let response_bytes = if cli.mock_response {
-        Some(serde_json::to_vec_pretty(&handoff::Response::mock(
-            &config,
-            &request_bytes,
-        )?)?)
-    } else if let Some(path) = &cli.response {
-        Some(handoff::read_bounded(path)?)
-    } else {
-        None
-    };
+    let response_bytes = load_response(&cli, &config, &request_bytes)?;
     let mut record = candidate(&config);
     if let Some(bytes) = &response_bytes {
         let response: handoff::Response = serde_json::from_slice(bytes)?;
@@ -233,11 +185,73 @@ fn main() -> Result<()> {
         errors.is_empty(),
         "replayed candidate failed structural validation"
     );
+    let root = create_output(&cli.batch)?;
+    fs::write(root.join("request.json"), &request_bytes)?;
+    if cli.emit_request {
+        println!(
+            "request prepared: {}; no generation authorized or performed",
+            root.join("request.json").display()
+        );
+        return Ok(());
+    }
+    if let Some(bytes) = &response_bytes {
+        fs::write(root.join("response.json"), bytes)?;
+    }
+    let config_bytes = serde_json::to_vec_pretty(&config)?;
+    let candidates = format!("{line}\n");
+    fs::write(root.join("config.json"), &config_bytes)?;
+    fs::write(root.join("candidates.jsonl"), &candidates)?;
+    let report = run_admission(&root, response_bytes.is_some())?;
+    write_provenance(
+        &root,
+        &config_bytes,
+        &line,
+        &request_bytes,
+        response_bytes.as_deref(),
+        &report,
+    )?;
+    println!(
+        "offline validation passed: 1 valid candidate, 0 admitted, 1 rejection ({})",
+        report["rows"]["eu-fal-001"]["rule"]
+    );
+    println!("outputs: {}; training/export BLOCKED", root.display());
+    Ok(())
+}
+
+fn load_plan(cli: &Cli) -> Result<(Config, Vec<u8>)> {
+    let result = if let Some(path) = &cli.request {
+        handoff::load_request(path)?
+    } else {
+        let config: Config = match &cli.config {
+            Some(path) => serde_json::from_slice(&handoff::read_bounded(path)?)?,
+            None => Config::default(),
+        };
+        config.validate()?;
+        let bytes = serde_json::to_vec_pretty(&handoff::request(&config))?;
+        (config, bytes)
+    };
+    Ok(result)
+}
+
+fn load_response(cli: &Cli, config: &Config, request_bytes: &[u8]) -> Result<Option<Vec<u8>>> {
+    let response = if cli.mock_response {
+        Some(serde_json::to_vec_pretty(&handoff::Response::mock(
+            config,
+            request_bytes,
+        )?)?)
+    } else if let Some(path) = &cli.response {
+        Some(handoff::read_bounded(path)?)
+    } else {
+        None
+    };
+    Ok(response)
+}
+
+fn create_output(batch: &str) -> Result<PathBuf> {
     ensure!(
-        !cli.batch.is_empty()
-            && cli.batch.len() <= 80
-            && cli
-                .batch
+        !batch.is_empty()
+            && batch.len() <= 80
+            && batch
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b)),
         "batch must be 1..80 ASCII letters, digits, underscores or hyphens"
@@ -254,23 +268,12 @@ fn main() -> Result<()> {
             "output parent must be a real directory"
         );
     }
-    let root = PathBuf::from("data/raw").join(&cli.batch);
+    let root = PathBuf::from("data/raw").join(batch);
     fs::create_dir(&root).context("batch destination must be new; choose another --batch")?;
-    fs::write(root.join("request.json"), &request_bytes)?;
-    if cli.emit_request {
-        println!(
-            "request prepared: {}; no generation authorized or performed",
-            root.join("request.json").display()
-        );
-        return Ok(());
-    }
-    if let Some(bytes) = &response_bytes {
-        fs::write(root.join("response.json"), bytes)?;
-    }
-    let config_bytes = serde_json::to_vec_pretty(&config)?;
-    let candidates = format!("{line}\n");
-    fs::write(root.join("config.json"), &config_bytes)?;
-    fs::write(root.join("candidates.jsonl"), &candidates)?;
+    Ok(root)
+}
+
+fn run_admission(root: &std::path::Path, replay: bool) -> Result<serde_json::Value> {
     // No invented reviewer score: the real admission gate must reject unscored rows.
     fs::write(root.join("scores.jsonl"), "")?;
     let scorer = FileScorer::load(&root.join("scores.jsonl"))?;
@@ -279,12 +282,8 @@ fn main() -> Result<()> {
         &[root.join("candidates.jsonl")],
         &scorer,
         &AdmissionConfig {
-            batch: if response_bytes.is_some() {
-                "replay"
-            } else {
-                "mock"
-            },
-            output_root: &root,
+            batch: if replay { "replay" } else { "mock" },
+            output_root: root,
             report_path: &report_path,
         },
     )?;
@@ -296,42 +295,49 @@ fn main() -> Result<()> {
             && fs::read(&outputs.admitted)?.is_empty(),
         "unexpected admission outcome; smoke failed"
     );
+    Ok(report)
+}
+
+fn write_provenance(
+    root: &std::path::Path,
+    config_bytes: &[u8],
+    line: &str,
+    request_bytes: &[u8],
+    response_bytes: Option<&[u8]>,
+    report: &serde_json::Value,
+) -> Result<()> {
     // Path/clock independent provenance. Admission diagnostics retain parent behavior.
     let provenance = json!({
         "purpose": if response_bytes.is_some() { "offline_recorded_response_validation" } else { "offline_structural_smoke_only" },
         "generator_version": env!("CARGO_PKG_VERSION"),
         "generator_source_sha256": hash(include_bytes!("main.rs")),
         "handoff_source_sha256": hash(include_bytes!("handoff.rs")),
-        "request_sha256": hash(&request_bytes),
-        "response_sha256": response_bytes.as_ref().map(|bytes| hash(bytes)),
+        "request_sha256": hash(request_bytes),
+        "response_sha256": response_bytes.map(hash),
         "response_evidence": if response_bytes.is_some() { "unverified_recorded_envelope" } else { "built_in_fixture" },
         "admission_source_sha256": hash(include_bytes!("../../euthymia-verify/src/lib.rs")),
         "validator_source_sha256": hash(include_bytes!("../../euthymia-schema/src/validator.rs")),
         "cross_field_source_sha256": hash(include_bytes!("../../euthymia-schema/src/validate.rs")),
-        "config_sha256": hash(&config_bytes),
+        "config_sha256": hash(config_bytes),
         "candidate_line_sha256": hash(line.as_bytes()),
-        "candidate_file_sha256": hash(candidates.as_bytes()),
+        "candidate_file_sha256": hash(format!("{line}\n").as_bytes()),
         "contract_sha256": hash(include_bytes!("../../../contract/BEHAVIORAL_CONTRACT.md")),
         "schema_sha256": hash(include_bytes!("../../../schemas/sft_record.v1.json")),
         "taxonomy_sha256": hash(include_bytes!("../../../taxonomy/coverage-matrix.csv")),
         "dependency_lock_sha256": hash(include_bytes!("../../../Cargo.lock")),
         "teacher_called_by_this_command": false,
+        "external_transport_verified": false,
         "teacher_rights": "unreviewed",
         "human_review": "pending",
         "training_allowed": false,
         "export_allowed": false,
         "structural_validation": "passed",
-        "admitted": 0,
-        "rejected": 1
+        "admitted": report["counts"]["admitted"],
+        "rejected": report["counts"]["rejected"]
     });
     fs::write(
         root.join("provenance.json"),
         serde_json::to_vec_pretty(&provenance)?,
     )?;
-    println!(
-        "offline validation passed: 1 valid candidate, 0 admitted, 1 rejection ({})",
-        report["rows"]["eu-fal-001"]["rule"]
-    );
-    println!("outputs: {}; training/export BLOCKED", root.display());
     Ok(())
 }

@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use crate::{Config, Provider, candidate, hash};
 
 pub fn request(config: &Config) -> Value {
-    json!({
+    let mut request = json!({
         "kind": "euthymia.teacher_request",
         "version": 1,
         "scope": "fictional_everyday_puzzle_candidate_only",
@@ -24,7 +24,17 @@ pub fn request(config: &Config) -> Value {
             ],
             "max_tokens": 512
         }
-    })
+    });
+    if config.provider == Provider::Deepseek {
+        request["transport"] = json!("openrouter");
+        request["base_url"] = json!(crate::OPENROUTER_BASE_URL);
+        request["http_method"] = json!("POST");
+        request["request_body"]["provider"] = json!({
+            "only": ["deepseek"],
+            "allow_fallbacks": false
+        });
+    }
+    request
 }
 
 /// Size bound applies before parsing. Never reads environment variables or URLs.
@@ -98,27 +108,21 @@ impl Response {
             "response teacher identity mismatch"
         );
         ensure!(
-            !self.serving_provider.is_empty()
-                && self.serving_provider.len() <= 128
-                && self
-                    .serving_provider
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b"._-/".contains(&b)),
+            valid_serving_identity(&self.serving_provider),
             "serving_provider identity evidence required"
         );
         ensure!(
             config.provider != Provider::Mock || self.origin == Origin::SyntheticFixture,
             "mock cannot claim teacher origin"
         );
+        ensure!(
+            config.provider != Provider::Deepseek || self.serving_provider == "deepseek",
+            "OpenRouter pilot requires serving_provider deepseek; missing or alternate route evidence is rejected"
+        );
         // Parent #32 currently has a UTF-8 slicing finding. Quarantine instead of
         // changing another lane's admission logic or risking a worker panic.
         ensure!(
-            !self.content.trim().is_empty()
-                && self.content.len() <= 4096
-                && self
-                    .content
-                    .bytes()
-                    .all(|b| b.is_ascii_graphic() || matches!(b, b' ' | b'\n' | b'\t')),
+            valid_response_text(&self.content),
             "response must be 1..4096 bytes of nonempty printable ASCII text"
         );
         Ok(())
@@ -130,10 +134,28 @@ pub fn replay_candidate(config: &Config, response: &Response) -> Value {
     record["response"] = json!(response.content);
     if response.origin == Origin::RecordedTeacher {
         record["provenance"]["generator_kind"] = json!("teacher");
-        record["provenance"]["generator_id"] =
-            json!(format!("{}@{}", config.model, response.serving_provider));
+        record["provenance"]["generator_id"] = json!(format!(
+            "{}@openrouter/{}",
+            config.model, response.serving_provider
+        ));
     } else {
         record["provenance"]["generator_id"] = json!("euthymia-recorded-synthetic-fixture-v1");
     }
     record
+}
+
+fn valid_serving_identity(identity: &str) -> bool {
+    !identity.is_empty()
+        && identity.len() <= 128
+        && identity
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._-/".contains(&b))
+}
+
+fn valid_response_text(content: &str) -> bool {
+    !content.trim().is_empty()
+        && content.len() <= 4096
+        && content
+            .bytes()
+            .all(|b| b.is_ascii_graphic() || matches!(b, b' ' | b'\n' | b'\t'))
 }

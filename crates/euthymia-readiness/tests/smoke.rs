@@ -93,7 +93,7 @@ fn real_entrypoint_replays_candidates_and_provenance_without_admitting() {
 }
 
 fn remote_config() -> Value {
-    json!({"provider":"deepseek", "model":"pinned-model-1017", "endpoint":"https://teacher.invalid/v1", "api_key_env":"EUTHYMIA_TEACHER_API_KEY", "seed":42, "generated_at":"2026-11-28"})
+    json!({"provider":"deepseek", "model":"deepseek/deepseek-v4.1-flash-1017", "endpoint":"https://openrouter.ai/api/v1/chat/completions", "api_key_env":"OPENROUTER_API_KEY", "seed":42, "generated_at":"2026-11-28"})
 }
 
 #[test]
@@ -219,7 +219,7 @@ fn recorded_envelope_binds_identity_and_content_without_approving_it() {
     let request_path = "data/raw/request/request.json";
     let request = fs::read(temp.0.join(request_path)).unwrap();
     // Synthetic stand-in for a future Hermes recording. No provider is contacted.
-    let envelope = json!({"version":1,"request_sha256":sha(&request),"provider":"deepseek","model":"pinned-model-1017","serving_provider":"synthetic-test-route","origin":"synthetic_fixture","content":"A short pause can make room to try one puzzle piece again. The choice is yours."});
+    let envelope = json!({"version":1,"request_sha256":sha(&request),"provider":"deepseek","model":"deepseek/deepseek-v4.1-flash-1017","serving_provider":"deepseek","origin":"synthetic_fixture","content":"A short pause can make room to try one puzzle piece again. The choice is yours."});
     fs::write(temp.0.join("response.json"), envelope.to_string()).unwrap();
     assert!(
         temp.run(&[
@@ -269,7 +269,7 @@ fn recorded_envelope_binds_identity_and_content_without_approving_it() {
     assert_eq!(attributed_row["provenance"]["generator_kind"], "teacher");
     assert_eq!(
         attributed_row["provenance"]["generator_id"],
-        "pinned-model-1017@synthetic-test-route"
+        "deepseek/deepseek-v4.1-flash-1017@openrouter/deepseek"
     );
     assert!(
         fs::read(temp.0.join("data/raw/attributed/admitted/replay.jsonl"))
@@ -281,6 +281,7 @@ fn recorded_envelope_binds_identity_and_content_without_approving_it() {
         ("model", json!("different-model")),
         ("provider", json!("mock")),
         ("serving_provider", json!("")),
+        ("serving_provider", json!("another-provider")),
         ("version", json!(2)),
         ("content", json!("")),
         ("content", json!("x".repeat(4097))),
@@ -370,4 +371,85 @@ fn changed_request_and_incomplete_modes_fail_before_outputs() {
             .status
             .success()
     );
+}
+
+#[test]
+fn openrouter_wire_pins_are_preserved_and_cannot_be_weakened_on_replay() {
+    let temp = Sandbox::new();
+    fs::write(
+        temp.0.join("plan.json"),
+        include_bytes!("../../../docs/openrouter-teacher-plan.json"),
+    )
+    .unwrap();
+    assert!(
+        temp.run(&[
+            "--config",
+            "plan.json",
+            "--emit-request",
+            "--batch",
+            "openrouter"
+        ])
+        .status
+        .success()
+    );
+    let path = temp.0.join("data/raw/openrouter/request.json");
+    let bytes = fs::read(&path).unwrap();
+    let request: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(request["transport"], "openrouter");
+    assert_eq!(request["base_url"], "https://openrouter.ai/api/v1");
+    assert_eq!(
+        request["config"]["endpoint"],
+        "https://openrouter.ai/api/v1/chat/completions"
+    );
+    assert_eq!(request["config"]["api_key_env"], "OPENROUTER_API_KEY");
+    assert_eq!(
+        request["request_body"]["model"],
+        "deepseek/deepseek-v4.1-flash-1017"
+    );
+    assert_eq!(
+        request["request_body"]["provider"],
+        json!({"only":["deepseek"],"allow_fallbacks":false})
+    );
+    for pin in [
+        json!({"only":["deepseek"],"allow_fallbacks":true}),
+        json!({"only":["another-provider"],"allow_fallbacks":false}),
+        Value::Null,
+    ] {
+        let mut altered = request.clone();
+        altered["request_body"]["provider"] = pin;
+        fs::write(temp.0.join("altered.json"), altered.to_string()).unwrap();
+        let output = temp.run(&[
+            "--request",
+            "altered.json",
+            "--response",
+            "absent.json",
+            "--batch",
+            "no-output",
+        ]);
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("pins mismatch"));
+        assert!(!temp.0.join("data/raw/no-output").exists());
+    }
+    for (key, value) in [
+        ("endpoint", "https://api.deepseek.com/chat/completions"),
+        ("model", "deepseek/deepseek-v4.1-flash-latest"),
+        ("api_key_env", "DEEPSEEK_API_KEY"),
+    ] {
+        let mut config = remote_config();
+        config[key] = json!(value);
+        fs::write(temp.0.join("wrong-plan.json"), config.to_string()).unwrap();
+        assert!(
+            !temp
+                .run(&[
+                    "--config",
+                    "wrong-plan.json",
+                    "--emit-request",
+                    "--batch",
+                    "no-output"
+                ])
+                .status
+                .success()
+        );
+        assert!(!temp.0.join("data/raw/no-output").exists());
+    }
 }

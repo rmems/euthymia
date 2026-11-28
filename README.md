@@ -121,6 +121,10 @@ contract → taxonomy → generation → verification → assembly → Hugging F
 
 ## Development
 
+For a bounded offline first run from Hermes, see
+[the readiness handoff](docs/offline-readiness.md). The mock checks candidate
+structure and exercises admission rejection without approving training or export.
+
 All pipeline code is Rust, built as a single Cargo workspace. The toolchain is
 pinned in `rust-toolchain.toml`; shared dependencies are declared once in the
 root `Cargo.toml` `[workspace.dependencies]` and member crates opt in as their

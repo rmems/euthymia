@@ -1,4 +1,6 @@
 //! Bounded offline prerequisite for #16 and RM-2588, using #32's real gates.
+mod handoff;
+
 use std::{fs, path::PathBuf};
 
 use anyhow::{Context, Result, ensure};
@@ -119,8 +121,25 @@ struct Cli {
     #[arg(long)]
     config: Option<PathBuf>,
     /// Check configuration syntax only; never contacts the configured endpoint.
-    #[arg(long)]
+    #[arg(long, conflicts_with_all = ["emit_request", "request", "response", "mock_response"])]
     check_config: bool,
+    /// Emit a credential-free request for Hermes; no generation is performed.
+    #[arg(long, conflicts_with_all = ["request", "response", "mock_response"])]
+    emit_request: bool,
+    /// Replay this exact versioned request with --response or --mock-response.
+    #[arg(long, conflicts_with = "config", requires = "response_source")]
+    request: Option<PathBuf>,
+    /// Recorded v1 response envelope. Always unreviewed, never an approval.
+    #[arg(
+        long,
+        requires = "request",
+        conflicts_with = "mock_response",
+        group = "response_source"
+    )]
+    response: Option<PathBuf>,
+    /// Exercise the same replay path with a local fixture for a mock request.
+    #[arg(long, requires = "request", group = "response_source")]
+    mock_response: bool,
     /// Fresh directory name under data/raw/; existing destinations are refused.
     #[arg(long, default_value = "readiness-smoke")]
     batch: String,
@@ -170,20 +189,49 @@ fn main() -> Result<()> {
         cli.purpose == Purpose::Smoke,
         "training/export blocked: no reviewed teacher rights, human approval or RM-2588 release manifest"
     );
-    let config: Config = match cli.config {
-        Some(path) => serde_json::from_slice(&fs::read(path)?)?,
-        None => Config::default(),
+    let (config, request_bytes) = if let Some(path) = &cli.request {
+        handoff::load_request(path)?
+    } else {
+        let config: Config = match &cli.config {
+            Some(path) => serde_json::from_slice(&handoff::read_bounded(path)?)?,
+            None => Config::default(),
+        };
+        config.validate()?;
+        let bytes = serde_json::to_vec_pretty(&handoff::request(&config))?;
+        (config, bytes)
     };
-    config.validate()?;
     if cli.check_config {
         println!(
             "configuration syntax valid; live generation disabled; rights and human approval UNREVIEWED"
         );
         return Ok(());
     }
+    let response_bytes = if cli.mock_response {
+        Some(serde_json::to_vec_pretty(&handoff::Response::mock(
+            &config,
+            &request_bytes,
+        )?)?)
+    } else if let Some(path) = &cli.response {
+        Some(handoff::read_bounded(path)?)
+    } else {
+        None
+    };
+    let mut record = candidate(&config);
+    if let Some(bytes) = &response_bytes {
+        let response: handoff::Response = serde_json::from_slice(bytes)?;
+        response.validate(&config, &request_bytes)?;
+        record = handoff::replay_candidate(&config, &response);
+    } else if !cli.emit_request {
+        ensure!(
+            config.provider == Provider::Mock,
+            "live generation disabled: use --emit-request, then --request and --response for offline replay"
+        );
+    }
+    let line = serde_json::to_string(&record)?;
+    let errors = RecordValidator::new(RecordKind::Sft)?.validate_line(&line);
     ensure!(
-        config.provider == Provider::Mock,
-        "live generation disabled: DeepSeek configuration is preparation only; use --check-config"
+        errors.is_empty(),
+        "replayed candidate failed structural validation"
     );
     ensure!(
         !cli.batch.is_empty()
@@ -208,8 +256,18 @@ fn main() -> Result<()> {
     }
     let root = PathBuf::from("data/raw").join(&cli.batch);
     fs::create_dir(&root).context("batch destination must be new; choose another --batch")?;
+    fs::write(root.join("request.json"), &request_bytes)?;
+    if cli.emit_request {
+        println!(
+            "request prepared: {}; no generation authorized or performed",
+            root.join("request.json").display()
+        );
+        return Ok(());
+    }
+    if let Some(bytes) = &response_bytes {
+        fs::write(root.join("response.json"), bytes)?;
+    }
     let config_bytes = serde_json::to_vec_pretty(&config)?;
-    let line = serde_json::to_string(&candidate(&config))?;
     let candidates = format!("{line}\n");
     fs::write(root.join("config.json"), &config_bytes)?;
     fs::write(root.join("candidates.jsonl"), &candidates)?;
@@ -221,7 +279,11 @@ fn main() -> Result<()> {
         &[root.join("candidates.jsonl")],
         &scorer,
         &AdmissionConfig {
-            batch: "mock",
+            batch: if response_bytes.is_some() {
+                "replay"
+            } else {
+                "mock"
+            },
             output_root: &root,
             report_path: &report_path,
         },
@@ -231,15 +293,18 @@ fn main() -> Result<()> {
         report["counts"]["input_rows"] == 1
             && report["counts"]["admitted"] == 0
             && report["counts"]["rejected"] == 1
-            && report["rows"]["eu-fal-001"]["rule"] == "rubric_below_threshold"
             && fs::read(&outputs.admitted)?.is_empty(),
         "unexpected admission outcome; smoke failed"
     );
     // Path/clock independent provenance. Admission diagnostics retain parent behavior.
     let provenance = json!({
-        "purpose": "offline_structural_smoke_only",
+        "purpose": if response_bytes.is_some() { "offline_recorded_response_validation" } else { "offline_structural_smoke_only" },
         "generator_version": env!("CARGO_PKG_VERSION"),
         "generator_source_sha256": hash(include_bytes!("main.rs")),
+        "handoff_source_sha256": hash(include_bytes!("handoff.rs")),
+        "request_sha256": hash(&request_bytes),
+        "response_sha256": response_bytes.as_ref().map(|bytes| hash(bytes)),
+        "response_evidence": if response_bytes.is_some() { "unverified_recorded_envelope" } else { "built_in_fixture" },
         "admission_source_sha256": hash(include_bytes!("../../euthymia-verify/src/lib.rs")),
         "validator_source_sha256": hash(include_bytes!("../../euthymia-schema/src/validator.rs")),
         "cross_field_source_sha256": hash(include_bytes!("../../euthymia-schema/src/validate.rs")),
@@ -250,7 +315,7 @@ fn main() -> Result<()> {
         "schema_sha256": hash(include_bytes!("../../../schemas/sft_record.v1.json")),
         "taxonomy_sha256": hash(include_bytes!("../../../taxonomy/coverage-matrix.csv")),
         "dependency_lock_sha256": hash(include_bytes!("../../../Cargo.lock")),
-        "teacher_called": false,
+        "teacher_called_by_this_command": false,
         "teacher_rights": "unreviewed",
         "human_review": "pending",
         "training_allowed": false,
@@ -263,7 +328,10 @@ fn main() -> Result<()> {
         root.join("provenance.json"),
         serde_json::to_vec_pretty(&provenance)?,
     )?;
-    println!("offline smoke passed: 1 valid candidate, 0 admitted, 1 unscored rejection");
+    println!(
+        "offline validation passed: 1 valid candidate, 0 admitted, 1 rejection ({})",
+        report["rows"]["eu-fal-001"]["rule"]
+    );
     println!("outputs: {}; training/export BLOCKED", root.display());
     Ok(())
 }

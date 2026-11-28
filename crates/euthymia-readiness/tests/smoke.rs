@@ -65,7 +65,7 @@ fn real_entrypoint_replays_candidates_and_provenance_without_admitting() {
         );
         assert_eq!(provenance["training_allowed"], false);
         assert_eq!(provenance["export_allowed"], false);
-        assert_eq!(provenance["teacher_called"], false);
+        assert_eq!(provenance["teacher_called_by_this_command"], false);
         let row: Value = serde_json::from_slice(&candidate).unwrap();
         assert!(row["verification"].is_null());
         assert!(
@@ -149,4 +149,225 @@ fn symlink_output_parent_is_refused() {
     std::os::unix::fs::symlink(temp.0.join("elsewhere"), temp.0.join("data/raw")).unwrap();
     assert!(!temp.run(&[]).status.success());
     assert_eq!(fs::read_dir(temp.0.join("elsewhere")).unwrap().count(), 0);
+}
+
+fn sha(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+#[test]
+fn emitted_mock_request_replays_through_the_real_entrypoint() {
+    let temp = Sandbox::new();
+    assert!(
+        temp.run(&["--emit-request", "--batch", "request"])
+            .status
+            .success()
+    );
+    let request_path = "data/raw/request/request.json";
+    let request = fs::read(temp.0.join(request_path)).unwrap();
+    assert!(!temp.0.join("data/raw/request/candidates.jsonl").exists());
+    for batch in ["replay-one", "replay-two"] {
+        let output = temp.run(&[
+            "--request",
+            request_path,
+            "--mock-response",
+            "--batch",
+            batch,
+        ]);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let root = temp.0.join("data/raw").join(batch);
+        let p: Value =
+            serde_json::from_slice(&fs::read(root.join("provenance.json")).unwrap()).unwrap();
+        assert_eq!(p["request_sha256"], sha(&request));
+        assert_eq!(
+            p["response_sha256"],
+            sha(&fs::read(root.join("response.json")).unwrap())
+        );
+        assert_eq!(p["admitted"], 0);
+        assert_eq!(p["human_review"], "pending");
+    }
+    for name in ["candidates.jsonl", "response.json", "provenance.json"] {
+        assert_eq!(
+            fs::read(temp.0.join("data/raw/replay-one").join(name)).unwrap(),
+            fs::read(temp.0.join("data/raw/replay-two").join(name)).unwrap()
+        );
+    }
+}
+
+#[test]
+fn recorded_envelope_binds_identity_and_content_without_approving_it() {
+    let temp = Sandbox::new();
+    fs::write(temp.0.join("teacher.json"), remote_config().to_string()).unwrap();
+    assert!(
+        temp.run(&[
+            "--config",
+            "teacher.json",
+            "--emit-request",
+            "--batch",
+            "request"
+        ])
+        .status
+        .success()
+    );
+    let request_path = "data/raw/request/request.json";
+    let request = fs::read(temp.0.join(request_path)).unwrap();
+    // Synthetic stand-in for a future Hermes recording. No provider is contacted.
+    let envelope = json!({"version":1,"request_sha256":sha(&request),"provider":"deepseek","model":"pinned-model-1017","serving_provider":"synthetic-test-route","origin":"synthetic_fixture","content":"A short pause can make room to try one puzzle piece again. The choice is yours."});
+    fs::write(temp.0.join("response.json"), envelope.to_string()).unwrap();
+    assert!(
+        temp.run(&[
+            "--request",
+            request_path,
+            "--response",
+            "response.json",
+            "--batch",
+            "recording"
+        ])
+        .status
+        .success()
+    );
+    let row: Value = serde_json::from_slice(
+        &fs::read(temp.0.join("data/raw/recording/candidates.jsonl")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(row["response"], envelope["content"]);
+    assert!(row["verification"].is_null());
+    let p: Value = serde_json::from_slice(
+        &fs::read(temp.0.join("data/raw/recording/provenance.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(p["training_allowed"], false);
+    assert_eq!(p["teacher_rights"], "unreviewed");
+    assert_eq!(p["teacher_called_by_this_command"], false);
+    // Simulate attribution from a recorded teacher without any provider call.
+    let mut attributed = envelope.clone();
+    attributed["origin"] = json!("recorded_teacher");
+    fs::write(temp.0.join("attributed.json"), attributed.to_string()).unwrap();
+    assert!(
+        temp.run(&[
+            "--request",
+            request_path,
+            "--response",
+            "attributed.json",
+            "--batch",
+            "attributed"
+        ])
+        .status
+        .success()
+    );
+    let attributed_row: Value = serde_json::from_slice(
+        &fs::read(temp.0.join("data/raw/attributed/candidates.jsonl")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(attributed_row["provenance"]["generator_kind"], "teacher");
+    assert_eq!(
+        attributed_row["provenance"]["generator_id"],
+        "pinned-model-1017@synthetic-test-route"
+    );
+    assert!(
+        fs::read(temp.0.join("data/raw/attributed/admitted/replay.jsonl"))
+            .unwrap()
+            .is_empty()
+    );
+    for (key, value) in [
+        ("request_sha256", json!("0".repeat(64))),
+        ("model", json!("different-model")),
+        ("provider", json!("mock")),
+        ("serving_provider", json!("")),
+        ("version", json!(2)),
+        ("content", json!("")),
+        ("content", json!("x".repeat(4097))),
+        ("content", json!("A caf\u{e9} puzzle.")),
+        ("rights_approved", json!(true)),
+        ("human_approved", json!(true)),
+    ] {
+        let mut bad = envelope.clone();
+        bad[key] = value;
+        fs::write(temp.0.join("bad.json"), bad.to_string()).unwrap();
+        assert!(
+            !temp
+                .run(&[
+                    "--request",
+                    request_path,
+                    "--response",
+                    "bad.json",
+                    "--batch",
+                    "must-not-exist"
+                ])
+                .status
+                .success(),
+            "{key}"
+        );
+        assert!(!temp.0.join("data/raw/must-not-exist").exists());
+    }
+    let mut missing = envelope.clone();
+    missing.as_object_mut().unwrap().remove("serving_provider");
+    fs::write(temp.0.join("bad.json"), missing.to_string()).unwrap();
+    assert!(
+        !temp
+            .run(&["--request", request_path, "--response", "bad.json"])
+            .status
+            .success()
+    );
+    assert!(
+        !temp
+            .run(&["--request", request_path, "--mock-response"])
+            .status
+            .success()
+    );
+}
+
+#[test]
+fn changed_request_and_incomplete_modes_fail_before_outputs() {
+    let temp = Sandbox::new();
+    assert!(
+        temp.run(&["--emit-request", "--batch", "request"])
+            .status
+            .success()
+    );
+    let path = temp.0.join("data/raw/request/request.json");
+    let original: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    for (key, value) in [
+        ("version", json!(2)),
+        ("scope", json!("arbitrary-prompt")),
+        ("contract_sha256", json!("changed")),
+        ("request_body", json!({})),
+    ] {
+        let mut bad = original.clone();
+        bad[key] = value;
+        fs::write(temp.0.join("bad-request.json"), bad.to_string()).unwrap();
+        assert!(
+            !temp
+                .run(&[
+                    "--request",
+                    "bad-request.json",
+                    "--mock-response",
+                    "--batch",
+                    "no-output"
+                ])
+                .status
+                .success()
+        );
+        assert!(!temp.0.join("data/raw/no-output").exists());
+    }
+    assert!(
+        !temp
+            .run(&["--request", "data/raw/request/request.json"])
+            .status
+            .success()
+    );
+    assert!(!temp.run(&["--response", "absent.json"]).status.success());
+    assert!(
+        !temp
+            .run(&["--emit-request", "--purpose", "export"])
+            .status
+            .success()
+    );
 }

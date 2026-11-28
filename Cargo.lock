@@ -396,6 +396,19 @@ name = "euthymia"
 version = "0.1.0"
 
 [[package]]
+name = "euthymia-readiness"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "euthymia-schema",
+ "euthymia-verify",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "euthymia-schema"
 version = "0.1.0"
 dependencies = [
